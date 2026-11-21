@@ -1,0 +1,33 @@
+html.mascot-surface, .mascot-surface body { background: transparent; }
+.desktop-mascot { display: grid; height: 100%; grid-template-rows: 80px 16px; place-items: center; user-select: none; }
+.mascot-button { position: relative; display: grid; place-items: center; width: 90px; height: 80px; border-radius: 19px; -webkit-app-region: no-drag; }
+.mascot-button img { width: 84px; height: 84px; object-fit: contain; pointer-events: none; transition: transform 170ms ease; filter: drop-shadow(0 3px 3px #19132f62); }
+.mascot-button:hover img { transform: translateY(-2px) scale(1.055); }
+.mascot-busy { position: absolute; right: 11px; bottom: 7px; width: 11px; height: 11px; border-radius: 50%; background: #b5f7e3; border: 2px solid #3b3869; }
+.mascot-grip { display: grid; place-items: center; width: 44px; height: 16px; -webkit-app-region: drag; }
+.mascot-grip span { display: block; width: 23px; height: 4px; border-radius: 4px; border: 1px solid #fff9; background: #504b68a8; }
+
+.companion-chat .titlebar { gap: 8px; padding-left: 10px; }
+.companion-avatar { width: 31px; height: 31px; object-fit: contain; }
+.companion-chat .conversation-header { padding: 0 11px; height: 43px; gap: 6px; }
+.companion-chat .conversation-heading { flex: 1; }
+.companion-chat .guide-launch { flex: none; padding: 4px 7px; }
+.companion-chat .model-button { margin-left: 0; max-width: 106px; }
+.companion-chat .welcome { padding: 9px 18px; }
+.companion-welcome-art { display: block; width: 112px; height: 104px; margin: 0 auto; object-fit: contain; }
+.companion-chat .welcome h1 { margin-top: 0; font-size: 20px; }
+.companion-chat .composer-shell, .companion-chat .message-list { width: calc(100% - 22px); }
+.companion-chat .composer-shell { max-height: 72%; overflow-y: auto; }
+.companion-chat .context-bar > .context-button:first-child { min-width: 0; max-width: none; flex: 1; }
+.companion-chat .context-bar .compact-capture { flex: none; color: var(--accent); background: var(--wash); border-color: var(--edge); }
+.companion-chat .composer { padding: 9px 9px 6px; border-radius: 12px; }
+.companion-chat .composer textarea { font-size: 14px; }
+.companion-chat .capture-notice { flex-wrap: wrap; }
+.companion-chat .attachment-preview span { max-width: min(190px, 51vw); }
+.companion-setting { display: flex; align-items: center; gap: 10px; }
+.companion-setting label { flex: 1; }
+.companion-setting img { width: 51px; height: 51px; object-fit: contain; }
+@media (prefers-reduced-motion: reduce) {
+  .mascot-button img { transition: none; }
+  .mascot-button:hover img { transform: none; }
+}

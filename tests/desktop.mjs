@@ -23,7 +23,7 @@ let desktop;
 async function openApp() {
   const executablePath = packaged ? resolve('release/win-unpacked/Pane.exe') : electron;
   const entry = production ? '.' : resolve('dist/test/main.cjs');
-  return driver.launch({ executablePath, args: [...(packaged ? [] : [entry]), '--user-data-dir=' + launcher],
+  return driver.launch({ executablePath, args: [...(packaged ? [] : [entry]), '--show-main', '--user-data-dir=' + launcher],
     env: { ...process.env, PANE_TEST_REQUEST_LOG: requestLog }, timeout: 25_000 });
 }
 

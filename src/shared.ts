@@ -1,4 +1,18 @@
-export type Events = { capture: CaptureState; observation: ObservationState; chat: Update; guidance: GuidanceState | null; account: undefined; shown: undefined };
+export type Events = { capture: CaptureState; observation: ObservationState; chat: Update; guidance: GuidanceState | null; account: undefined; shown: WindowSurface; mascot: MascotState; settings: Settings };
+export const COMPANION_SKINS = { orbit: '轨道机器人', fox: '灯笼狐', moss: '苔云' } as const;
+export type CompanionSkin = keyof typeof COMPANION_SKINS;
+export type MascotState = { skin: CompanionSkin; busy: boolean };
+export type WindowSurface = { compact: boolean; panel?: 'guide' | 'settings' };
+export type CompanionOptions = { companionEnabled: boolean; companionSkin: CompanionSkin };
+
+export function companionOptions(input: Partial<CompanionOptions>): CompanionOptions {
+  return {
+    companionEnabled: input.companionEnabled !== false,
+    companionSkin: typeof input.companionSkin === 'string' && Object.hasOwn(COMPANION_SKINS, input.companionSkin)
+      ? input.companionSkin : 'orbit',
+  };
+}
+
 export type Theme = 'system' | 'light' | 'dark';
 export type Provider = 'chatgpt' | 'api-key';
 export type AwarenessOptions = {
@@ -24,7 +38,7 @@ export function awarenessOptions(input: Partial<AwarenessOptions>): AwarenessOpt
   };
 }
 
-export type Settings = AwarenessOptions & { theme: Theme; pinned: boolean; autoCapture: boolean; denied: string[]; provider: Provider; models: Partial<Record<Provider, string>> };
+export type Settings = AwarenessOptions & CompanionOptions & { theme: Theme; pinned: boolean; autoCapture: boolean; denied: string[]; provider: Provider; models: Partial<Record<Provider, string>> };
 export type Target = { id: string; title: string; executable: string };
 export type Screenshot = { id: string; target: Target; image: string; capturedAt: number };
 export type CaptureState = { target: Target | null; bound: boolean; pending: boolean; shot: Screenshot | null; error?: string };
@@ -88,13 +102,16 @@ export type SendResult = { kind: 'started'; run: Run } | { kind: 'confirm-text';
 export type Update = { type: 'delta'; run: Run; text: string } | { type: 'done'; run: Run };
 export type Model = { id: string; name: string };
 export type Account = { status: 'disconnected' | 'connecting' | 'connected' | 'reauth_required'; sharing: boolean; label?: string; apiKey: boolean };
-export type Snapshot = { settings: Settings; conversationId: string | null; capture: CaptureState; observation: ObservationState; run: Run | null; shortcut: boolean };
+export type Snapshot = { settings: Settings; conversationId: string | null; capture: CaptureState; observation: ObservationState; run: Run | null; shortcut: boolean; compact: boolean };
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export interface Actions {
   snapshot(): Snapshot;
-  'settings:update'(settings: Partial<AwarenessOptions & Pick<Settings, 'theme' | 'pinned' | 'autoCapture' | 'denied' | 'provider'>>): Settings;
+  'settings:update'(settings: Partial<AwarenessOptions & CompanionOptions & Pick<Settings, 'theme' | 'pinned' | 'autoCapture' | 'denied' | 'provider'>>): Settings;
   'window:hide'(): void;
+  'companion:appearance'(): MascotState;
+  'companion:toggle'(): Promise<void>;
+  'companion:expand'(panel?: WindowSurface['panel']): void;
   'window:list'(): Promise<Target[]>;
   'capture:bind'(id: string | null): Promise<void>;
   'capture:refresh'(): Promise<void>;
