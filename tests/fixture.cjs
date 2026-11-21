@@ -1,6 +1,6 @@
 const { app, BrowserWindow } = require('electron');
 app.whenReady().then(async () => {
-  const window = new BrowserWindow({ width: 590, height: 400, x: 90, y: 95, backgroundColor: '#318654', title: 'Pane 纸上交易验收' });
+  const window = new BrowserWindow({ width: 590, height: 400, x: 90, y: 95, backgroundColor: '#318654', title: 'Pane 纸上交易验收', webPreferences: { backgroundThrottling: false } });
   const html = `<meta charset="utf-8"><title>Pane 纸上交易验收</title>
     <body style="font:18px Segoe UI,sans-serif;background:#318654;color:white;margin:0;padding:74px 95px">
     <h1 style="margin:0">纸上交易 · DEMO</h1><p>SIM-101　价格 125.40　持仓 10</p>

@@ -26,7 +26,7 @@ export function awarenessOptions(input: Partial<AwarenessOptions>): AwarenessOpt
 
 export type Settings = AwarenessOptions & { theme: Theme; pinned: boolean; autoCapture: boolean; denied: string[]; provider: Provider; models: Partial<Record<Provider, string>> };
 export type Target = { id: string; title: string; executable: string };
-export type Screenshot = { id: string; target: Target; image: string };
+export type Screenshot = { id: string; target: Target; image: string; capturedAt: number };
 export type CaptureState = { target: Target | null; bound: boolean; pending: boolean; shot: Screenshot | null; error?: string };
 export type ObservationUse = 'auto' | 'omit' | 'image';
 export type ScreenRegion = { x: number; y: number; width: number; height: number };
@@ -47,7 +47,12 @@ export type ObservationState = {
 };
 export type Conversation = { id: string; title: string; updatedAt: number };
 export type Message = { id: string; role: 'user' | 'assistant'; text: string; imageLabel: string | null; status: 'complete' | 'streaming' | 'stopped' | 'failed'; error: string | null };
-export type Run = { id: string; conversationId: string };
+export type VisualSource = 'manual' | 'observation' | 'instant' | 'text';
+export type SentVisual = { source: 'text' } | {
+  source: Exclude<VisualSource, 'text'>; screenshotId: string; targetTitle: string; capturedAt: number;
+};
+export type Run = { id: string; conversationId: string; visual: SentVisual };
+export type SendResult = { kind: 'started'; run: Run } | { kind: 'confirm-text'; reason: string };
 export type Update = { type: 'delta'; run: Run; text: string } | { type: 'done'; run: Run };
 export type Model = { id: string; name: string };
 export type Account = { status: 'disconnected' | 'connecting' | 'connected' | 'reauth_required'; sharing: boolean; label?: string; apiKey: boolean };
@@ -78,8 +83,8 @@ export interface Actions {
   'chat:open'(id: string): Message[];
   'chat:new'(): Conversation;
   'chat:delete'(id: string): void;
-  'chat:send'(id: string, text: string, shotId: string | null, observationUse?: ObservationUse): Promise<Run>;
-  'chat:retry'(id: string, shotId: string | null, observationUse?: ObservationUse): Promise<Run>;
+  'chat:send'(id: string, text: string, shotId: string | null, observationUse?: ObservationUse): Promise<SendResult>;
+  'chat:retry'(id: string, shotId: string | null, observationUse?: ObservationUse): Promise<SendResult>;
   'chat:stop'(): void;
 }
 

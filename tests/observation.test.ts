@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { awarenessOptions, type Screenshot, type Target } from '../src/shared';
-import { SAMPLE_BYTES, SAMPLE_WIDTH, type CaptureWorker, type FrameSample } from '../src/main/native';
+import { SAMPLE_BYTES, SAMPLE_WIDTH, CaptureError, type CaptureWorker, type FrameSample } from '../src/main/native';
 import { compareFrames, ObservationManager } from '../src/main/observation';
-import { ScreenContextEngine } from '../src/main/screen-context';
 import { Store } from '../src/main/store';
 
 const a: Target = { id: '123:45:600', title: 'Fixture A', executable: 'Fixture.exe' };
@@ -33,7 +32,7 @@ class Worker implements CaptureWorker {
   }
   async jpeg() {
     this.encodes++;
-    return this.pendingImage ?? { id: `frame-${this.encodes}`, target: this.current.target, image: `memory:${this.current.pixels[0]}` };
+    return this.pendingImage ?? { id: `frame-${this.encodes}`, target: this.current.target, image: `memory:${this.current.pixels[0]}`, capturedAt: Date.now() };
   }
   close() { this.closed = true; }
 }
@@ -140,7 +139,7 @@ test('rebind, pause and disable discard pending work and old previews', async t 
   manager.configure(b, enabled, []);
   const latest = await manager.fresh(b.id);
   assert.ok(latest);
-  pending.resolve({ id: 'stale', target: a, image: 'stale' });
+  pending.resolve({ id: 'stale', target: a, image: 'stale', capturedAt: Date.now() });
   assert.equal(await old, null);
   assert.equal(manager.current.latest?.observationId, latest.observation.observationId);
   assert.equal(workers[0].closed, true);
@@ -172,22 +171,42 @@ test('failed identities and denylisted apps cannot leave usable observations', a
   assert.equal((await manager.fresh(b.id))?.observation.targetId, b.id);
 });
 
-test('deduplication is scoped to a conversation and window and can be explicitly overridden', async t => {
-  const { manager } = fixture(t);
+test('returning to a cached screen reuses the same JPEG while creating a new observation', async t => {
+  const { manager, workers, advance } = fixture(t);
   manager.configure(a, enabled, []);
   const first = await manager.fresh(a.id);
   assert.ok(first);
-  const context = new ScreenContextEngine();
-  assert.equal(context.select('thread-A', first).sendImage, true);
-  assert.equal(context.select('thread-A', first).sendImage, true, 'an unsuccessful request does not mark the image delivered');
-  context.complete('thread-A', context.select('thread-A', first));
-  assert.equal(context.select('thread-A', first).sendImage, false);
-  assert.equal(context.select('thread-A', first, true).sendImage, true);
-  assert.equal(context.select('thread-B', first).sendImage, true);
-  manager.configure(b, enabled, []);
-  const other = await manager.fresh(b.id);
-  assert.ok(other && other.observation.frameHash === first.observation.frameHash);
-  assert.equal(context.select('thread-A', other).sendImage, true);
-  context.forget('thread-A');
-  assert.equal(context.select('thread-A', first).sendImage, true);
+  const worker = workers[0];
+  advance(1700);
+  worker.current = frame(a, 100);
+  assert.equal(await manager.fresh(a.id), null);
+  advance(400);
+  const second = await manager.fresh(a.id);
+  assert.ok(second && second.screenshot.id !== first.screenshot.id);
+  advance(1600);
+  worker.current = frame(a);
+  assert.equal(await manager.fresh(a.id), null);
+  advance(400);
+  const returned = await manager.fresh(a.id);
+  assert.ok(returned);
+  assert.notEqual(returned.observation.observationId, first.observation.observationId);
+  assert.equal(returned.screenshot.id, first.screenshot.id);
+  assert.equal(worker.encodes, 2);
+});
+
+test('send-time observation distinguishes a candidate, transient exit and unsafe failure', async t => {
+  const { manager, workers, advance } = fixture(t);
+  manager.configure(a, enabled, []);
+  assert.equal((await manager.prepare(a.id, new AbortController().signal)).kind, 'confirmed');
+  advance(700);
+  workers[0].current = frame(a, 100);
+  assert.equal((await manager.prepare(a.id, new AbortController().signal)).kind, 'pending');
+  workers[0].error = new CaptureError('worker_exit', 'worker exited');
+  assert.deepEqual(await manager.prepare(a.id, new AbortController().signal),
+    { kind: 'unavailable', reason: 'worker exited', allowInstant: true });
+  manager.resume();
+  await manager.fresh(a.id);
+  workers[1].error = new CaptureError('target_gone', 'window closed');
+  assert.deepEqual(await manager.prepare(a.id, new AbortController().signal),
+    { kind: 'unavailable', reason: 'window closed', allowInstant: false });
 });

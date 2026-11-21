@@ -49,9 +49,14 @@ try {
       bundle: true, platform: 'node', target: 'node24', format: 'cjs',
       outdir: 'dist/test', outExtension: { '.js': '.cjs' }, external: ['electron'],
       plugins: [{
-        name: 'test-ai-only',
+        name: 'desktop-fixtures',
         setup(build) {
           build.onResolve({ filter: /^\.\/ai$/ }, args => args.importer.includes('src') ? { path: resolve('tests/ai-fixture.ts') } : undefined);
+          build.onLoad({ filter: /[\\/]src[\\/]main[\\/]native\.ts$/ }, async args => ({
+            contents: (await readFile(args.path, 'utf8')) +
+              "\nimport { installCaptureGate } from '../../tests/capture-gate';\ninstallCaptureGate(NativeBridge);\n",
+            loader: 'ts',
+          }));
         },
       }],
     });
@@ -104,6 +109,18 @@ try {
     assert.equal(promptResult.ok, true);
     assert.equal(promptResult.value.apiKey, false);
     console.log('Windows credential prompt opens and cancels. DPAPI round-trip passed.');
+    fixture = await driver.launch({ executablePath: electron,
+      args: [resolve('tests/fixture.cjs'), '--user-data-dir=' + join(profile, 'packaged-fixture')], timeout: 25_000 });
+    await (await fixture.firstWindow()).getByText('纸上交易 · DEMO').waitFor();
+    await page.getByRole('button', { name: '关闭弹窗' }).click();
+    await page.getByRole('switch', { name: '屏幕感知' }).click();
+    await page.getByTitle('选择目标窗口').click();
+    await page.getByRole('dialog').getByRole('button', { name: /Pane 纸上交易验收/ }).click();
+    await waitSnapshot(({ observation }) => observation.phase === 'watching' && observation.latest, 'bundled observation');
+    await page.getByRole('button', { name: '预览最近观察' }).click();
+    await page.getByRole('dialog').getByRole('img', { name: 'Pane 纸上交易验收' }).waitFor();
+    assert.equal((await snapshot()).conversationId, null);
+    console.log('Real observation through the bundled native helper passed.');
   } else {
     await page.getByText('本地视觉验收模型', { exact: true }).waitFor();
     await page.getByRole('button', { name: '隐藏到托盘' }).click();
@@ -185,10 +202,21 @@ try {
     await page.getByRole('button', { name: '删除', exact: true }).click();
     await page.getByText('还没有对话', { exact: true }).waitFor();
     console.log('Denylist, theme persistence, SQLite restart, deletion and screenshot ephemerality passed.');
+    const ipc = (action, ...args) => page.evaluate(([name, params]) => window.pane.call(name, ...params), [action, args]);
     async function desktopAction(action, ...args) {
-      const result = await page.evaluate(([name, params]) => window.pane.call(name, ...params), [action, args]);
+      const result = await ipc(action, ...args);
       assert.ok(result.ok, result.error);
       return result.value;
+    }
+    const gate = (method, ...params) => desktop.evaluate((_electron, { key, values }) =>
+      globalThis.paneCaptureGate[key](...values), { key: method, values: params });
+    async function waitGate(name) {
+      const until = Date.now() + 10_000;
+      while (Date.now() < until) {
+        if (await gate('arrived', name)) return;
+        await new Promise(done => setTimeout(done, 60));
+      }
+      throw new Error('Capture fixture timed out: ' + name);
     }
     async function openFixture() {
       fixture = await driver.launch({ executablePath: electron,
@@ -250,24 +278,173 @@ try {
     const fingerprint = image => createHash('sha256').update(image).digest('hex').slice(0, 12);
     assert.notEqual(fingerprint(stale.image), fingerprint(currentShot.image));
 
-    await ask('观察验收：使用最新截图', fingerprint(currentShot.image));
+    await ask('观察验收：手动截图优先', fingerprint(stale.image));
+    await page.getByText(/上轮实际来源 · 手动截图/).waitFor();
+    await ask('观察验收：这个终端是什么？', fingerprint(currentShot.image));
+    await page.getByText(/上轮实际来源 · 最新屏幕观察/).waitFor();
+    await ask('观察验收：右下角的资金是什么意思？', fingerprint(currentShot.image));
+    assert.equal((await snapshot()).observation.latest.screenshotReference, updated.screenshotReference);
     const active = (await snapshot()).conversationId;
     const turns = await desktopAction('chat:open', active);
-    assert.equal(turns.find(item => item.role === 'user').imageLabel, '屏幕观察');
-    await ask('观察验收：重复观察', '0 张');
+    assert.equal(turns.filter(item => item.role === 'user')[1].imageLabel, '屏幕观察');
+    await desktopAction('capture:refresh');
+    const manualAlongsideObservation = (await snapshot()).capture.shot;
+    assert.ok(manualAlongsideObservation);
     await page.getByRole('button', { name: '预览最近观察' }).click();
     await page.getByRole('button', { name: '本条附上观察截图' }).click();
     await ask('观察验收：明确重附', fingerprint(currentShot.image));
+    assert.equal((await snapshot()).capture.shot.id, manualAlongsideObservation.id, 'unused manual attachment is preserved');
+    await page.getByRole('button', { name: '移除截图' }).click();
     await page.getByRole('checkbox', { name: '发送时使用最新屏幕观察' }).uncheck();
     await ask('观察验收：仅文字', '0 张');
-    assert.equal(await requests(), before + 4);
-    console.log('Local observation, deduplicated/forced AI context, manual-shot ordering and explicit send passed.');
+    await page.getByText('上轮实际来源 · 仅文字', { exact: true }).waitFor();
+    assert.equal(await requests(), before + 5);
+
+    // Real WGC sees a candidate. Hold one sampling result to keep preparation in that state.
+    const chart = await fixture.firstWindow();
+    await chart.evaluate(() => {
+      let tick = 0;
+      window.chartTimer = setInterval(() => {
+        document.body.style.backgroundColor = ['#17314f', '#db684b', '#28875f', '#b644aa'][tick++ % 4];
+      }, 260);
+    });
+    await waitPhase('changing');
+    await gate('arm', 'sample');
+    await waitGate('sample');
+    const priorCaptures = await gate('count', 'capture');
+    await ask('观察验收：持续变化的行情', '1 张');
+    await page.getByText(/上轮实际来源 · 即时捕获/).waitFor();
+    assert.equal(await gate('count', 'capture'), priorCaptures + 1);
+
+    // In forced-image mode the unavailable sample must not be replaced with an instant screenshot.
+    const runningId = (await snapshot()).conversationId;
+    const imageRequired = await ipc('chat:send', runningId, '观察验收：必须观察图', null, 'image');
+    assert.equal(imageRequired.value.kind, 'confirm-text');
+    assert.equal(await gate('count', 'capture'), priorCaptures + 1);
+
+    const typed = page.getByRole('textbox', { name: '输入你的问题' });
+    const stopBefore = await requests();
+    // IPC resolves after native returns; this models a result that arrives after a denylist change.
+    await gate('arm', 'capture');
+    const pendingDeny = ipc('chat:send', runningId, '观察验收：取消禁止名单竞态', null, 'auto');
+    await waitGate('capture');
+    await desktopAction('settings:update', { denied: ['ELECTRON.EXE'] });
+    await gate('release', 'capture');
+    await gate('release', 'sample');
+    const deniedResult = await pendingDeny;
+    assert.equal(deniedResult.ok, false);
+    assert.match(deniedResult.error, /名单已变更|禁止捕获名单已变更/);
+    assert.equal(await requests(), stopBefore);
+    await desktopAction('settings:update', { denied: oldDeny });
+    await chart.evaluate(() => { clearInterval(window.chartTimer); document.body.style.backgroundColor = '#854fbc'; });
+    await desktopAction('observation:resume');
+    await waitObservation(fixtureId);
+
+    // Refresh failure preserves an earlier explicitly attached, still-valid screenshot.
+    await desktopAction('capture:refresh');
+    const preserved = (await snapshot()).capture.shot;
+    assert.ok(preserved);
+    await gate('arm', 'capture', true);
+    const failedRefresh = ipc('capture:refresh');
+    await waitGate('capture');
+    await gate('release', 'capture');
+    await failedRefresh;
+    assert.equal((await snapshot()).capture.shot.id, preserved.id);
+    await page.getByText(/测试夹具：Windows 捕获超时/).waitFor();
+
+    // Stop the model and retry the same manual picture, with no automatic resend.
+    await typed.fill('观察验收：中断后重试');
+    await typed.press('Enter');
+    await page.getByText('已发送测试图片，等待停止', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '停止生成' }).click();
+    await page.getByText('已停止生成', { exact: true }).waitFor();
+    assert.equal(await requests(), stopBefore + 1);
+    await page.getByRole('button', { name: '重发上一条' }).click();
+    await page.locator('.assistant-message').last().getByText(new RegExp(fingerprint(preserved.image))).waitFor();
+    await page.getByText(/上轮实际来源 · 手动截图/).waitFor();
+
+    // Holding native validation lets cancellation arrive between verification and request dispatch.
+    async function holdManual(question) {
+      await desktopAction('capture:refresh');
+      const selected = (await snapshot()).capture.shot;
+      assert.ok(selected);
+      await gate('arm', 'validate');
+      const promise = ipc('chat:send', (await snapshot()).conversationId, question, selected.id, 'auto');
+      await waitGate('validate');
+      return { promise, selected };
+    }
+    async function assertCancelled(pending, message) {
+      await gate('release', 'validate');
+      const result = await pending.promise;
+      assert.equal(result.ok, false);
+      assert.match(result.error, message);
+    }
+
+    const raceStart = await requests();
+    const lock = await holdManual('观察验收：锁屏前的请求');
+    await desktop.evaluate(({ powerMonitor }) => powerMonitor.emit('lock-screen'));
+    await assertCancelled(lock, /桌面不可用/);
+    await waitPhase('paused');
+    const lockedCaptureCount = await gate('count', 'capture');
+    assert.equal((await ipc('capture:refresh')).ok, false);
+    assert.equal((await ipc('observation:resume')).ok, false);
+    assert.equal(await gate('count', 'capture'), lockedCaptureCount);
+    await desktop.evaluate(({ powerMonitor }) => powerMonitor.emit('unlock-screen'));
+    await waitPhase('paused');
+    await desktopAction('observation:resume');
+    await waitObservation(fixtureId);
+    await desktop.evaluate(({ powerMonitor }) => powerMonitor.emit('suspend'));
+    await waitPhase('paused');
+    assert.equal((await ipc('observation:resume')).ok, false);
+    assert.equal((await ipc('capture:refresh')).ok, false);
+    await desktop.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
+    await waitPhase('paused');
+    await desktopAction('observation:resume');
+    await waitObservation(fixtureId);
+
+    const pause = await holdManual('观察验收：观察暂停前的请求');
+    await desktopAction('observation:pause');
+    await assertCancelled(pause, /已暂停/);
+    const pausedCount = await gate('count', 'capture');
+    await ipc('capture:remove');
+    await ask('观察验收：暂停时仅文字', '0 张');
+    assert.equal(await gate('count', 'capture'), pausedCount);
+    await desktopAction('observation:resume');
+    await waitObservation(fixtureId);
+
+    const late = await holdManual('观察验收：来自上一窗口');
+    const alternateTitle = 'Pane paper-trading second fixture';
+    await fixture.evaluate(async ({ BrowserWindow }, title) => {
+      const other = new BrowserWindow({ width: 480, height: 270, title });
+      await other.loadURL('data:text/html,' + encodeURIComponent('<title>' + title + '</title><main>Simulated window</main>'));
+    }, alternateTitle);
+    const other = (await desktopAction('window:list')).find(target => target.title === alternateTitle);
+    assert.ok(other);
+    await desktopAction('capture:bind', other.id);
+    await assertCancelled(late, /窗口已切换/);
+    assert.equal((await waitObservation(other.id)).targetId, other.id);
+    assert.equal((await snapshot()).capture.shot, null);
+    await desktopAction('capture:bind', fixtureId);
+    await waitObservation(fixtureId);
+    await fixture.evaluate(({ BrowserWindow }, title) => BrowserWindow.getAllWindows().find(window => window.getTitle() === title)?.destroy(), alternateTitle);
+
+    const stop = await holdManual('观察验收：用户停止准备');
+    await desktopAction('chat:stop');
+    await assertCancelled(stop, /停止准备/);
+    const deleting = await holdManual('观察验收：对话删除后返回');
+    await desktopAction('chat:delete', (await snapshot()).conversationId);
+    await assertCancelled(deleting, /对话已删除/);
+    await page.reload();
+    await page.getByText('本地视觉验收模型', { exact: true }).waitFor();
+    assert.equal(await requests(), raceStart + 1);
+    console.log('Manual priority, repeated static vision, instant capture, failed refresh, explicit retry and cancellation races passed.');
+
 
     await page.getByRole('button', { name: '暂停监控' }).click();
     await waitPhase('paused');
-    assert.equal(await desktopAction('observation:preview', updated.observationId), null);
+    assert.equal((await snapshot()).observation.latest, null);
     await page.getByRole('button', { name: '恢复监控' }).click();
-    const resumed = await waitObservation(fixtureId, updated.observationId);
+    const resumed = await waitObservation(fixtureId);
 
     const resize = await fixture.evaluate(({ BrowserWindow, screen }) => {
       const win = BrowserWindow.getAllWindows()[0];
@@ -293,7 +470,16 @@ try {
     await fixture.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].minimize());
     await waitPhase('stopped');
     assert.equal((await snapshot()).observation.latest, null);
-    await ask('观察验收：捕获停止后仅文字', '0 张');
+    const beforeFailure = await requests();
+    const failedQuestion = page.getByRole('textbox', { name: '输入你的问题' });
+    await failedQuestion.fill('观察验收：捕获停止后仅文字');
+    await failedQuestion.press('Enter');
+    await page.getByRole('button', { name: '仅发送文字' }).waitFor();
+    assert.equal(await failedQuestion.inputValue(), '观察验收：捕获停止后仅文字');
+    assert.equal(await requests(), beforeFailure);
+    await page.getByRole('button', { name: '仅发送文字' }).click();
+    await page.locator('.assistant-message').last().getByText(/0 张/).waitFor();
+    await page.locator('.assistant-message').last().getByRole('button', { name: '重发上一条' }).waitFor();
     await fixture.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
     await page.getByRole('button', { name: '刷新截图' }).click();
     await shot(page);
@@ -316,6 +502,10 @@ try {
     const nativeWindow = JSON.parse((await run(helper, ['list', '0'], { windowsHide: true })).stdout).find(item => item.id === reopened);
     assert.ok(nativeWindow);
     await assert.rejects(run(helper, ['observe', '0', reopened, 'ELECTRON.EXE'], { windowsHide: true }), { stderr: 'blocked' });
+    const verified = await run(helper, ['verify', '0', reopened, '--expected-executable', nativeWindow.executable], { windowsHide: true });
+    assert.equal(JSON.parse(verified.stdout).id, reopened);
+    await assert.rejects(run(helper, ['capture', '0', reopened, '--expected-executable', 'DifferentApp.exe'],
+      { windowsHide: true }), { stderr: 'target_gone' });
     const parts = reopened.split(':');
     await assert.rejects(run(helper, ['observe', '0', [parts[0], parts[1], '1'].join(':')], { windowsHide: true }), { stderr: 'target_gone' });
 
@@ -326,7 +516,7 @@ try {
     assert.ok(!(await desktopAction('window:list')).some(target => target.id === reopened));
     await page.getByRole('switch', { name: '屏幕感知' }).click();
     await waitPhase('off');
-    assert.equal(await requests(), before + 5);
+    assert.equal(await requests(), beforeFailure + 1);
     console.log('Pause/resume, failed-capture fallback, window identity and reopen, denylist and disable passed.');
 
 

@@ -5,7 +5,7 @@ import { ArrowUp, ChevronDown, ChevronRight, History, Image, Link2, LoaderCircle
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AWARENESS_RANGES, type Account, type Actions, type CaptureState, type Conversation, type Message, type Model,
-  type ObservationState, type ObservationUse, type Run, type Screenshot, type Settings, type Target } from '../shared';
+  type ObservationState, type ObservationUse, type Run, type Screenshot, type Settings, type Target, type VisualSource } from '../shared';
 import './style.css';
 
 async function call<K extends keyof Actions>(name: K, ...args: Parameters<Actions[K]>): Promise<Awaited<ReturnType<Actions[K]>>> {
@@ -30,6 +30,11 @@ const observationFields = [
   { key: 'maxObservations', title: '保留观察数量' },
 ] as const;
 
+const visualLabels: Record<VisualSource, string> = {
+  manual: '手动截图', observation: '最新屏幕观察', instant: '即时捕获', text: '仅文字',
+};
+const localTime = (value: number) => new Date(value).toLocaleTimeString('zh-CN');
+
 function App() {
   const [settings, setSettings] = useState<Settings>();
   const [account, setAccount] = useState<Account>();
@@ -45,6 +50,8 @@ function App() {
   const [run, setRun] = useState<Run | null>(null);
   const [delta, setDelta] = useState('');
   const [sending, setSending] = useState(false);
+  const [sendIssue, setSendIssue] = useState<{ reason: string; retry: boolean } | null>(null);
+  const [lastSent, setLastSent] = useState<Run | null>(null);
   const [shortcut, setShortcut] = useState(true);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
@@ -61,6 +68,7 @@ function App() {
   const activeRef = useRef<string | null>(null);
   const providerRef = useRef<Settings['provider']>('chatgpt');
   const latestRun = useRef<Run | null>(null);
+  const sendAttempt = useRef<AbortController | null>(null);
   const viewVersion = useRef(0);
   const focusComposer = () => requestAnimationFrame(() => input.current?.focus());
 
@@ -76,7 +84,7 @@ function App() {
     activeRef.current = id;
     setActive(id);
     setMessages(rows);
-    if (resetText) setText('');
+    if (resetText) { setText(''); setSendIssue(null); }
   }, []);
 
   useEffect(() => {
@@ -87,6 +95,7 @@ function App() {
       window.pane.subscribe('shown', () => { setOverlay(null); focusComposer(); }),
       window.pane.subscribe('account', () => { void refreshAccount(); }),
       window.pane.subscribe('chat', update => {
+        setLastSent(update.run);
         if (update.type === 'delta') {
           latestRun.current = update.run;
           setRun(update.run);
@@ -107,6 +116,7 @@ function App() {
       setShortcut(state.shortcut);
       setRun(state.run);
       latestRun.current = state.run;
+      if (state.run) setLastSent(state.run);
       if (state.conversationId && !viewVersion.current) await openChat(state.conversationId);
     }).catch(fail);
     void refreshHistory();
@@ -173,7 +183,7 @@ function App() {
     }
   }, [observing, observation.target?.id, observedPreview, overlay]);
 
-  function clearError() { setError(''); setSaved(false); }
+  function clearError() { setError(''); setSendIssue(null); setSaved(false); }
   async function change(patch: Parameters<Actions['settings:update']>[0]) {
     clearError();
     try { apply(await call('settings:update', patch)); } catch (reason) { fail(reason); }
@@ -246,33 +256,71 @@ function App() {
     } catch (reason) { fail(reason); } finally { setAccountBusy(false); }
   }
 
-  async function submit(retry = false) {
-    if (sending || run || (!retry && !text.trim() && !capture.shot)) return;
+  async function submit(retry = false, textOnly = false) {
+    if (sendAttempt.current || run || (!retry && !text.trim() && (!capture.shot || textOnly))) return;
     if (!connected || !model) { showSettings(); setError('连接账户并选择模型后即可发送。'); return; }
     clearError();
+    const attempt = new AbortController();
+    sendAttempt.current = attempt;
     setSending(true);
+    const question = text;
+    const shotId = textOnly ? null : capture.shot?.id ?? null;
+    const use = textOnly ? 'omit' : observationUse;
     try {
       let id = activeRef.current;
       if (!id) {
         id = (await call('chat:new')).id;
         await openChat(id, false);
       }
-      const use = observing ? observationUse : 'omit';
+      attempt.signal.throwIfAborted();
       const response = retry
-        ? await call('chat:retry', id, capture.shot?.id ?? null, use)
-        : await call('chat:send', id, text, capture.shot?.id ?? null, use);
-      if (!retry) setText('');
+        ? await call('chat:retry', id, shotId, use)
+        : await call('chat:send', id, question, shotId, use);
+      if (response.kind === 'confirm-text') {
+        if (!attempt.signal.aborted) setSendIssue({ reason: response.reason, retry });
+        return;
+      }
+      const started = response.run;
+      setLastSent(started);
+      if (!retry && !attempt.signal.aborted) setText(current => current === question ? '' : current);
       setObservationUse('auto');
-      if ((await call('snapshot')).run?.id === response.id) {
-        if (latestRun.current?.id !== response.id) setDelta('');
-        latestRun.current = response;
-        setRun(response);
+      if ((await call('snapshot')).run?.id === started.id) {
+        if (latestRun.current?.id !== started.id) setDelta('');
+        latestRun.current = started;
+        setRun(started);
       }
       if (activeRef.current === id) await openChat(id, false);
       await refreshHistory();
       requestAnimationFrame(() => { if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight; });
-    } catch (reason) { fail(reason); } finally { setSending(false); }
+    } catch (reason) {
+      if (!attempt.signal.aborted) fail(reason);
+    } finally {
+      sendAttempt.current = null;
+      setSending(false);
+    }
   }
+
+  function stop() {
+    if (sending && !run) {
+      sendAttempt.current?.abort();
+      setError('已停止准备本轮请求。');
+    }
+    void call('chat:stop').catch(fail);
+  }
+
+  function refreshCapture() {
+    clearError();
+    void call('capture:refresh').catch(fail);
+  }
+
+  const canObserve = settings?.screenAwarenessEnabled && capture.bound && observation.phase !== 'paused';
+  const plan = observationUse === 'image' ? (observation.phase === 'watching' ? visualLabels.observation : '等待有效观察截图')
+    : capture.shot ? visualLabels.manual
+    : observationUse === 'omit' || !canObserve ? visualLabels.text
+    : observation.phase === 'watching' ? visualLabels.observation
+    : observing ? '发送时即时捕获' : '发送时检查窗口，必要时确认仅文字';
+  const receipt = lastSent?.conversationId === active ? lastSent.visual : null;
+  const visualError = sendIssue ?? (capture.error ? { reason: capture.error, retry: false } : null);
 
   const generating = run?.conversationId === active;
   const title = history.find(item => item.id === active)?.title ?? '新对话';
@@ -335,12 +383,20 @@ function App() {
         </div>
         <div className="composer-shell">
           {!shortcut && <div className="notice" role="alert">Ctrl+Shift+Space 已被占用。可从托盘打开 Pane 并选择窗口。</div>}
-          {(error || capture.error) && !overlay && <div className="notice" role="alert">{error || capture.error}{error && <IconButton title="关闭提示" onClick={clearError}><X size={14} /></IconButton>}</div>}
+          {error && !overlay && <div className="notice" role="alert">{error}<IconButton title="关闭提示" onClick={clearError}><X size={14} /></IconButton></div>}
+          {visualError && !overlay && <div className="notice capture-notice" role="alert">
+            <span>{visualError.reason}{sendIssue && ' 本轮尚未发送。'}</span>
+            <div className="button-row">
+              {capture.target && <button className="button" disabled={capture.pending || sending || !!run} onClick={() => { setObservationUse('auto'); refreshCapture(); }}>重新截图</button>}
+              {(visualError.retry || text.trim()) && <button className="button" disabled={sending || !!run}
+                onClick={() => void submit(visualError.retry, true)}>仅发送文字</button>}
+            </div>
+          </div>}
           <div className="context-bar">
             <button className={`context-button ${capture.target ? 'target-ready' : ''}`} onClick={() => void showWindows()} title="选择目标窗口">
               {capture.bound ? <Link2 size={15} /> : <Monitor size={15} />}<span>{capture.target?.title ?? '选择窗口'}</span><ChevronDown size={13} />
             </button>
-            {capture.target && <><IconButton title="刷新截图" disabled={capture.pending} onClick={() => { clearError(); void call('capture:refresh').catch(fail); }}><RefreshCw className={capture.pending ? 'spin' : ''} size={15} /></IconButton>
+            {capture.target && <><IconButton title="刷新截图" disabled={capture.pending} onClick={refreshCapture}><RefreshCw className={capture.pending ? 'spin' : ''} size={15} /></IconButton>
               {capture.bound && <IconButton title="解除绑定" onClick={() => void bind(null)}><Unlink size={15} /></IconButton>}</>}
             <span className="context-status">{capture.pending ? '正在捕获' : capture.bound ? '已绑定' : capture.target ? '前台窗口' : ''}</span>
             <button className="context-button awareness-switch" role="switch" aria-checked={!!settings?.screenAwarenessEnabled}
@@ -366,22 +422,28 @@ function App() {
           </div>}
           <div className="composer">
             {capture.shot && <div className="attachment"><button className="attachment-preview" onClick={() => { clearError(); setOverlay('preview'); }} aria-label="预览截图">
-              <img src={capture.shot.image} alt="" /><span><strong>窗口截图</strong><small>{capture.shot.target.title}</small></span>
+              <img src={capture.shot.image} alt="" /><span><strong>手动截图</strong><small>{capture.shot.target.title}</small></span>
             </button><IconButton title="移除截图" onClick={removeImage}><X size={15} /></IconButton></div>}
             <textarea ref={input} value={text} maxLength={20_000} rows={2} placeholder="输入你的问题…" aria-label="输入你的问题"
               onChange={event => setText(event.target.value)} onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); void submit(); }
               }} />
-            <div className="composer-footer"><span>
-              {observing ? <label className="observe-attach"><input type="checkbox" checked={observationUse !== 'omit'}
-                onChange={event => setObservationUse(event.target.checked ? 'auto' : 'omit')} />
-                {observationUse === 'image' ? '本条消息重新附上观察截图' : '发送时使用最新屏幕观察'}</label>
-                : capture.shot ? '截图将随本条消息发送' : 'Shift + Enter 换行'}
-            </span>
-              {run ? <button className="send stop" title="停止生成" aria-label="停止生成" onClick={() => void call('chat:stop').catch(fail)}><Square size={13} fill="currentColor" /></button>
-                : <button className="send" title="发送" aria-label="发送" disabled={sending || (!text.trim() && !capture.shot)} onClick={() => void submit()}>{sending ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={20} />}</button>}
+            <div className="composer-footer"><div className="composer-mode">
+              <span className="visual-plan">本轮计划 · {plan}</span>
+              {(settings?.screenAwarenessEnabled || observationUse === 'image') && <label className="observe-attach">
+                <input type="checkbox" disabled={sending} checked={observationUse !== 'omit'}
+                  onChange={event => setObservationUse(event.target.checked ? 'auto' : 'omit')} />
+                {observationUse === 'image' ? '本条必须附上观察截图' : '发送时使用最新屏幕观察'}</label>}
+            </div>
+              {run || sending ? <button className="send stop" title={run ? '停止生成' : '停止准备'}
+                aria-label={run ? '停止生成' : '停止准备'} onClick={stop}><Square size={13} fill="currentColor" /></button>
+                : <button className="send" title="发送" aria-label="发送" disabled={!text.trim() && !capture.shot}
+                  onClick={() => void submit()}><ArrowUp size={20} /></button>}
             </div>
           </div>
+          {receipt && <div className="sent-visual" role="status">上轮实际来源 · {visualLabels[receipt.source]}
+            {receipt.source !== 'text' && <> · {receipt.targetTitle} · {localTime(receipt.capturedAt)}</>}</div>}
+
           <div className="privacy-note">截图仅在内存中保留 · 发送时提交给 OpenAI</div>
         </div>
       </main>
@@ -404,8 +466,8 @@ function App() {
         {overlay === 'observation' && observedPreview && <div className="dialog-body preview-content">
           <img src={observedPreview.image} alt={observedPreview.target.title} />
           <div className="preview-actions"><span>{observedPreview.target.title}</span><div className="button-row">
-            <button className="button" onClick={() => { setObservationUse('omit'); setOverlay(null); }}>本条不使用观察</button>
-            <button className="button primary" onClick={() => { setObservationUse('image'); setOverlay(null); focusComposer(); }}>本条附上观察截图</button>
+            <button className="button" disabled={sending} onClick={() => { setObservationUse('omit'); setOverlay(null); }}>本条不使用观察</button>
+            <button className="button primary" disabled={sending} onClick={() => { setObservationUse('image'); setOverlay(null); focusComposer(); }}>本条附上观察截图</button>
           </div></div>
         </div>}
         {overlay === 'delete' && <div className="dialog-body"><p>将从本机删除这段对话及其消息。</p><div className="button-row end"><button className="button" onClick={() => setOverlay(null)}>取消</button><button className="button danger" onClick={() => void deleteChat()}>删除</button></div></div>}
