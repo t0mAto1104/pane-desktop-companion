@@ -1,0 +1,26 @@
+appId: local.pane.desktop-companion
+productName: Pane
+electronLanguages: [zh-CN, en-US]
+directories:
+  output: release
+  buildResources: assets
+files:
+  - dist/main/**/*
+  - dist/renderer/**/*
+  - package.json
+  - '!dist/**/*.map'
+extraResources:
+  - { from: native/bin/window-capture.exe, to: native/window-capture.exe }
+  - { from: vendor/siwc/LICENSE, to: licenses/siwc-LICENSE.txt }
+  - { from: vendor/siwc/THIRD_PARTY_NOTICES.md, to: licenses/siwc-THIRD-PARTY-NOTICES.md }
+  - { from: vendor/siwc/UPSTREAM.md, to: licenses/siwc-UPSTREAM.md }
+win:
+  icon: assets/pane.ico
+  signExecutable: false
+  artifactName: Pane-Setup-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: assets/pane.ico
+  uninstallerIcon: assets/pane.ico
