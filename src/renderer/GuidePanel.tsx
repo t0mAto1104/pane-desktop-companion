@@ -16,7 +16,8 @@ const boxStyle = ({ x, y, width, height }: ScreenRegion) => ({
   left: x * 100 + '%', top: y * 100 + '%', width: width * 100 + '%', height: height * 100 + '%',
 });
 
-export function GuidePanel({ target, observation }: { target: Target | null; observation: ObservationState }) {
+export function GuidePanel({ target, observation, chooseWindow, collapse, started }:
+  { target: Target | null; observation: ObservationState; chooseWindow: () => void; collapse: () => void; started: () => void }) {
   const [task, setTask] = useState('');
   const [query, setQuery] = useState('');
   const [allowImage, setAllowImage] = useState(false);
@@ -113,7 +114,9 @@ export function GuidePanel({ target, observation }: { target: Target | null; obs
   const highlightable = location?.candidates.filter(candidate => candidate.canHighlight) ?? [];
   return <div className="dialog-body guide-panel">
     <div className="guide-target"><strong>{target?.title ?? '请先绑定目标窗口'}</strong>
-      <span>仅指导 · 由你亲自操作</span></div>
+      {!target ? <button className="button" onClick={chooseWindow}>选择目标窗口</button>
+        : state?.mode === 'active' ? <button className="button" onClick={collapse}>收起到右上角</button> : null}
+    </div>
     {error && <div role="alert" className="notice">{error}</div>}
     {notice && <p role="status" className="muted">{notice}</p>}
     {busy && <p role="status" className="muted">{busy}</p>}
@@ -188,7 +191,7 @@ export function GuidePanel({ target, observation }: { target: Target | null; obs
           if (task.trim()) void perform('正在生成教学步骤…', async isCurrent => {
             setAllowImage(false);
             const value = await request('guidance:start', task, allowImage, crop?.region);
-            if (isCurrent()) setState(value);
+            if (isCurrent() && value) { setState(value); started(); }
           });
         }}><label className="field">教学任务<textarea rows={2} maxLength={1600} value={task} onChange={event => setTask(event.target.value)}
           placeholder="例如：指导我在模拟账户中完成一笔模拟交易" /></label>

@@ -4,7 +4,7 @@ import { ArrowUp, Camera, Maximize2, ChevronDown, ChevronRight, History, Image, 
   Monitor, PanelLeft, Pause, Pin, Play, Plus, RefreshCw, ScanLine, Settings2, Square, Trash2, Unlink, X } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { AWARENESS_RANGES, COMPANION_SKINS, type CompanionSkin, type Account, type Actions, type CaptureState, type Conversation, type Message, type Model,
+import { AWARENESS_RANGES, COMPANION_SKINS, type CompanionSkin, type Account, type Actions, type CaptureState, type Conversation, type GuidanceState, type Message, type Model,
   type ObservationState, type ObservationUse, type Run, type Screenshot, type Settings, type Target, type VisualSource } from '../shared';
 import { GuidePanel } from './GuidePanel';
 import { Mascot, MascotImage } from './Mascot';
@@ -39,6 +39,7 @@ const visualLabels: Record<VisualSource, string> = {
 const localTime = (value: number) => new Date(value).toLocaleTimeString('zh-CN');
 
 function App() {
+  const [guide, setGuide] = useState<GuidanceState | null>(null);
   const [compact, setCompact] = useState(false);
   const [settings, setSettings] = useState<Settings>();
   const [account, setAccount] = useState<Account>();
@@ -70,6 +71,7 @@ function App() {
   const scroller = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLElement>(null);
   const activeRef = useRef<string | null>(null);
+  const windowsReturnToGuide = useRef(false);
   const settingsRef = useRef<Settings | undefined>(undefined);
   const providerRef = useRef<Settings['provider']>('chatgpt');
   const latestRun = useRef<Run | null>(null);
@@ -95,21 +97,24 @@ function App() {
     let observed = false;
     let shown = false;
     let accountEvent = false;
+    let guideEvent = false;
     const subscriptions = [
       window.pane.subscribe('capture', setCapture),
       window.pane.subscribe('observation', state => { observed = true; setObservation(state); }),
       window.pane.subscribe('shown', surface => {
         shown = true;
+        windowsReturnToGuide.current = false;
         setCompact(surface.compact);
         if (surface.panel === 'settings') {
           setDenyDraft(settingsRef.current?.denied.join('\n') ?? '');
           setError('');
           setSaved(false);
         }
-        setOverlay(value => surface.panel ?? (!surface.compact && value === 'guide' ? value : null));
+        setOverlay(surface.panel ?? null);
         focusComposer();
       }),
       window.pane.subscribe('settings', apply),
+      window.pane.subscribe('guidance', state => { guideEvent = true; setGuide(state); }),
       window.pane.subscribe('account', state => { accountEvent = true; setAccount(state); }),
       window.pane.subscribe('chat', update => {
         setLastSent(update.run);
@@ -138,6 +143,7 @@ function App() {
       if (state.conversationId && !viewVersion.current) await openChat(state.conversationId);
     }).catch(fail);
     void refreshHistory();
+    void call('guidance:state').then(state => { if (!guideEvent) setGuide(state); }).catch(fail);
     void call('account:state').then(state => { if (!accountEvent) setAccount(state); }).catch(fail);
     focusComposer();
     return () => subscriptions.forEach(unsubscribe => unsubscribe());
@@ -182,17 +188,25 @@ function App() {
     if (area && area.scrollHeight - area.scrollTop - area.clientHeight < 220) area.scrollTop = area.scrollHeight;
   }, [messages, delta]);
   useEffect(() => { if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight; }, [active]);
+  const closeToTracker = overlay === 'guide' && !!guide && guide.mode !== 'done';
+  const dismissOverlay = useCallback(() => {
+    setOverlay(windowsReturnToGuide.current && overlay === 'windows' ? 'guide' : null);
+    windowsReturnToGuide.current = false;
+    if (closeToTracker) void call('window:hide').catch(fail);
+    else focusComposer();
+  }, [overlay, closeToTracker, fail]);
+
   useEffect(() => {
     if (overlay) dialog.current?.querySelector('button')?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.isComposing) return;
       event.preventDefault();
-      if (overlay) { setOverlay(null); focusComposer(); }
+      if (overlay) dismissOverlay();
       else void call('window:hide').catch(fail);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overlay, fail]);
+  }, [overlay, dismissOverlay, fail]);
 
   const observing = observation.phase === 'starting' || observation.phase === 'watching' || observation.phase === 'changing';
   useEffect(() => {
@@ -216,7 +230,8 @@ function App() {
     setDenyDraft(settings?.denied.join('\n') ?? '');
     setOverlay('settings');
   }
-  async function showWindows() {
+  async function showWindows(returnToGuide = false) {
+    windowsReturnToGuide.current = returnToGuide;
     clearError();
     setTargets(null);
     setOverlay('windows');
@@ -226,8 +241,13 @@ function App() {
   async function bind(id: string | null) {
     clearError();
     setObservationUse('auto');
-    setOverlay(null);
-    try { await call('capture:bind', id); focusComposer(); } catch (reason) { fail(reason); }
+    const back = windowsReturnToGuide.current;
+    windowsReturnToGuide.current = false;
+    try {
+      await call('capture:bind', id);
+      setOverlay(back ? 'guide' : null);
+      if (!back) focusComposer();
+    } catch (reason) { fail(reason); }
   }
   async function previewObservation() {
     if (!observation.latest) return;
@@ -387,7 +407,7 @@ function App() {
         <div className="conversation-header">
           {!compact && <IconButton title={sidebar ? '隐藏侧栏' : '显示侧栏'} pressed={sidebar} onClick={() => setSidebar(!sidebar)}><PanelLeft size={17} /></IconButton>}
           <span className="conversation-heading">{title}</span>
-          <button className="button guide-launch" onClick={() => { if (compact) expand('guide'); else { clearError(); setOverlay('guide'); } }}>桌面指导</button>
+          <button className="button guide-launch" onClick={() => { clearError(); void call('guidance:open').catch(fail); }}>桌面指导</button>
           <button className="model-button" onClick={showSettings} title="配置连接和模型">
             <span className={`status-dot ${connected ? 'online' : ''}`}/><span>{connected && activeModel ? activeModel : '连接模型'}</span><ChevronDown size={14} />
           </button>
@@ -492,11 +512,16 @@ function App() {
         </div>
       </main>
     </div>
-    {overlay && <div className="overlay" onMouseDown={event => { if (event.target === event.currentTarget) setOverlay(null); }}>
+    {overlay && <div className="overlay" onMouseDown={event => { if (event.target === event.currentTarget) dismissOverlay(); }}>
       <section ref={dialog} className={`dialog ${overlay === 'preview' || overlay === 'observation' || overlay === 'guide' ? 'preview-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="dialog-title">
-        <div className="dialog-heading"><h2 id="dialog-title">{{ settings:'设置', windows:'选择目标窗口', preview:'截图预览', observation:'最近观察', delete:'删除对话', guide:'桌面指导' }[overlay]}</h2><IconButton title="关闭弹窗" onClick={() => setOverlay(null)}><X size={18} /></IconButton></div>
+        <div className="dialog-heading"><h2 id="dialog-title">{{ settings:'设置', windows:'选择目标窗口', preview:'截图预览', observation:'最近观察', delete:'删除对话', guide:'桌面指导' }[overlay]}</h2><div className="dialog-controls">
+          {overlay === 'guide' && <button className="button" onClick={() => { setOverlay(null); focusComposer(); }}>返回聊天</button>}
+          <IconButton title={closeToTracker ? '收起指导窗口' : '关闭弹窗'} onClick={dismissOverlay}><X size={18} /></IconButton>
+        </div></div>
         {error && <div className="notice dialog-notice" role="alert">{error}</div>}
-        {overlay === 'guide' && <GuidePanel target={capture.bound ? capture.target : null} observation={observation} />}
+        {overlay === 'guide' && <GuidePanel target={capture.bound ? capture.target : null} observation={observation}
+          chooseWindow={() => void showWindows(true)} collapse={dismissOverlay}
+          started={() => { setOverlay(null); void call('window:hide').catch(fail); }} />}
         {overlay === 'windows' && <div className="dialog-body">
           {!targets && <div className="waiting"><LoaderCircle size={15} className="spin" /> 正在查找窗口</div>}
           {targets?.length === 0 && <p className="muted">当前没有可绑定的窗口。</p>}

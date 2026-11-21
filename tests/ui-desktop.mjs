@@ -12,6 +12,7 @@ import { _electron as driver } from 'playwright-core';
 const temporary = resolve(tmpdir());
 const profile = await mkdtemp(join(temporary, 'pane-guide-test-'));
 const packaged = process.argv.includes('--packaged');
+const trackerPreview = process.argv.find(arg => arg.startsWith('--tracker-preview='))?.slice('--tracker-preview='.length);
 const requestLog = join(profile, 'requests.log');
 let desktop, fixture;
 if (!packaged) await build({
@@ -127,6 +128,7 @@ try {
     win.setBounds({ ...bounds, x: there ? there.x + 30 : bounds.x + 110,
       y: there ? there.y + 35 : bounds.y + 35, width: bounds.width + 25 });
   });
+  await focusFixture();
   await waitOverlay(state => !!state && state.bounds.x !== marker.bounds.x);
   await terminal.evaluate(() => { document.getElementById('open-long').style.display = 'none'; });
   await waitOverlay(state => state === null);
@@ -167,9 +169,66 @@ try {
     await panel.getByRole('img', { name: '原始像素局部截图' }).waitFor();
 
     await panel.getByRole('textbox', { name: '教学任务' }).fill('如何完成一笔模拟交易？');
+    const readTracker = () => desktop.evaluate(({ BrowserWindow, screen }) => {
+      const chat = BrowserWindow.getAllWindows().find(win => win.webContents.getURL().endsWith('/index.html'));
+      const tracker = BrowserWindow.getAllWindows().find(win => win.getTitle() === 'Pane 指导任务栏');
+      const bounds = tracker?.getBounds();
+      return { chatVisible: chat.isVisible(), bounds, visible: tracker?.isVisible() ?? false, focused: tracker?.isFocused() ?? false,
+        hit: bounds && screen.dipToScreenPoint({ x: bounds.x + 80, y: bounds.y + 36 }) };
+    });
+    const waitTracker = async condition => {
+      for (let attempt = 0; attempt < 60; attempt++) {
+        const current = await readTracker();
+        if (condition(current)) return current;
+        await sleep(100);
+      }
+      throw new Error('Unexpected tracker state ' + JSON.stringify(await readTracker()));
+    };
     await panel.getByRole('button', { name: '生成步骤' }).click();
+    await waitTracker(value => !value.chatVisible);
+    const task = await call('guidance:state');
+    assert.equal(task.mode, 'active');
+    const workArea = await fixture.evaluate(({ BrowserWindow, screen }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      const area = screen.getDisplayMatching(win.getBounds()).workArea;
+      win.setBounds(area);
+      return area;
+    });
+    await focusFixture();
+    const tracked = await waitTracker(value => value.visible);
+    assert.equal(tracked.focused, false);
+    assert.equal(tracked.bounds.x + tracked.bounds.width, workArea.x + workArea.width - 16);
+    assert.equal(tracked.bounds.y, workArea.y + 16);
+    assert.ok(tracked.bounds.width <= 320 && tracked.bounds.height <= 190);
+    const trackerPage = desktop.windows().find(page => page.url().startsWith('data:') && page.url().includes(encodeURIComponent('<title>Pane 指导任务栏</title>')));
+    assert.ok(trackerPage, 'tracker has its own document');
+    await trackerPage.getByText('识别模拟开仓入口', { exact: true }).waitFor();
+    assert.equal(await trackerPage.evaluate(() => typeof window.pane), 'undefined');
+    if (trackerPreview) await trackerPage.screenshot({ path: trackerPreview, omitBackground: true });
+    const hitTest = await promisify(execFile)('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+      resolve('tests/overlay-hit.ps1'), String(tracked.hit.x), String(tracked.hit.y)], { windowsHide: true });
+    assert.equal(hitTest.stdout.trim(), handle, 'Windows hit testing reaches the app through the task tracker');
+
+    await call('guidance:open');
+    await panel.getByRole('button', { name: '检查结果' }).waitFor();
+    await waitTracker(value => value.chatVisible && !value.visible);
+    await panel.getByRole('button', { name: '收起指导窗口' }).click();
+    await focusFixture();
+    await waitTracker(value => !value.chatVisible && value.visible);
+    assert.equal((await call('guidance:state')).steps[0].stepId, task.steps[0].stepId);
+
+    await call('guidance:open');
+    await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(win => win.webContents.getURL().endsWith('/index.html')).close());
+    await focusFixture();
+    await waitTracker(value => !value.chatVisible && value.visible);
+    assert.equal((await call('guidance:state')).steps[0].stepId, task.steps[0].stepId);
+    await call('companion:expand');
+    await panel.waitFor({ state: 'hidden' });
+    assert.equal((await call('guidance:state')).steps[0].stepId, task.steps[0].stepId);
+    await call('guidance:open');
     await panel.getByRole('button', { name: '检查结果' }).waitFor();
     assert.equal(await remoteCalls(), 2);
+    console.log('Top-right task tracker is non-focusable and click-through, and the session survives closing both the panel and window.');
     await panel.getByRole('button', { name: '重新定位' }).click();
     await panel.getByRole('button', { name: '在窗口中高亮' }).waitFor();
     await panel.getByRole('button', { name: '检查结果' }).click();
@@ -187,6 +246,9 @@ try {
     await panel.getByRole('button', { name: '下一步' }).click();
     await panel.getByRole('heading', { name: '核对模拟状态' }).waitFor();
     await panel.getByRole('button', { name: '暂停教学' }).click();
+    await panel.getByRole('button', { name: '继续教学' }).waitFor();
+    assert.equal((await call('guidance:state')).mode, 'paused');
+    assert.equal((await readTracker()).visible, false);
     await panel.getByRole('button', { name: '继续教学' }).click();
     await panel.getByRole('button', { name: '手动确认完成' }).click();
     await panel.getByRole('button', { name: '下一步' }).click();
@@ -197,7 +259,7 @@ try {
     assert.equal(await terminal.evaluate(() => window.paneFixtureOrderClicks), 0);
     assert.equal(await remoteCalls(), 2, 'changes and verification never call the model');
     await panel.getByRole('button', { name: '关闭弹窗' }).click();
-    await app.getByRole('button', { name: '隐藏到托盘' }).click();
+    await app.getByRole('button', { name: '收起浮动聊天' }).click();
     console.log('Explicit visual fallback, guide UI ROI drag, simulated teaching, observed state transitions and zero order clicks passed.');
   }
 

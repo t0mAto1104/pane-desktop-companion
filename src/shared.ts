@@ -120,6 +120,7 @@ export interface Actions {
   'observation:resume'(): void;
   'observation:preview'(id: string): Screenshot | null;
   'guidance:state'(): GuidanceState | null;
+  'guidance:open'(): void;
   'guidance:start'(task: string, includeImage: boolean, region?: ScreenRegion): Promise<GuidanceState | null>;
   'guidance:check'(): Promise<GuidanceState | null>;
   'guidance:confirm'(skip?: boolean): GuidanceState | null;
