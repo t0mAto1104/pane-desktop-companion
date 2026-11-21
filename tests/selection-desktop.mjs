@@ -106,7 +106,18 @@ try {
   await page.locator('#password').evaluate(input => input.select());
   const protectedSelection = await native('selection', String(process.pid));
   assert.equal(protectedSelection.selection.status, 'protected');
-  await call('settings:update', { selectionAuto: true });
+  await desktop.evaluate(({ BrowserWindow }) => {
+    const chat = BrowserWindow.getAllWindows().find(win => win.webContents.getURL().endsWith('index.html'));
+    chat.show();
+    chat.focus();
+  });
+  await app.locator('.settings-trigger').click();
+  const toggle = app.getByLabel('开启自动划词');
+  assert.equal(await toggle.isChecked(), false);
+  await toggle.check();
+  await app.waitForFunction(async () => (await window.pane.call('snapshot')).value.settings.selectionAuto);
+  await app.keyboard.press('Escape');
+  await call('window:hide');
   await focusContent('#sample');
   await page.locator('#sample').evaluate(node => {
     const range = document.createRange();
@@ -120,7 +131,31 @@ try {
   }
   assert.ok(toolbar && !toolbar.isClosed(), 'opt-in UIA selection events open the toolbar without a shortcut');
   assert.equal((await readFile(log, 'utf8')).trim().split('\n').length, 1);
+  const badge = toolbar.getByRole('button', { name: '划词操作' });
+  await badge.waitFor();
+  assert.equal(await toolbar.getByRole('button', { name: '问 AI' }).count(), 0);
+  const visualSize = await badge.boundingBox();
+  assert.ok(visualSize && visualSize.width <= 32 && visualSize.height <= 32, JSON.stringify(visualSize));
+  await badge.hover();
   await toolbar.getByRole('button', { name: '问 AI' }).waitFor();
+  await toolbar.evaluate(() => document.querySelector('.selection-toolbar')
+    .dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: null })));
+  await toolbar.waitForEvent('close', { timeout: 3000 }).catch(error => { if (!toolbar.isClosed()) throw error; });
+  await sleep(425);
+  assert.equal(desktop.windows().some(item => item.url().endsWith('#selection') && !item.isClosed()), false);
+  await page.locator('#sample').evaluate(node => {
+    const range = document.createRange();
+    range.setStart(node.firstChild, 7); range.setEnd(node.firstChild, 18);
+    const current = getSelection(); current.removeAllRanges(); current.addRange(range);
+  });
+  toolbar = undefined;
+  for (let attempt = 0; attempt < 45; attempt++) {
+    toolbar = desktop.windows().find(item => item.url().endsWith('#selection') && !item.isClosed());
+    if (toolbar) break;
+    await sleep(100);
+  }
+  assert.ok(toolbar, 'a new selection shows the badge again');
+  await toolbar.getByRole('button', { name: '划词操作' }).waitFor();
   await desktop.evaluate(({ powerMonitor }) => powerMonitor.emit('lock-screen'));
   await toolbar.waitForEvent('close', { timeout: 3000 }).catch(error => { if (!toolbar.isClosed()) throw error; });
   console.log('Protected field, explicit network submission and existing Chat persistence verified in',

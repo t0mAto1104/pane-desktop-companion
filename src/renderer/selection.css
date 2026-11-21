@@ -1,14 +1,20 @@
-.selection-surface{background:#fff;color:#202632}
-.selection-surface[data-theme=dark]{background:#191d29;color:#e7eaf3;color-scheme:dark}
-.selection-surface body{overflow:hidden;background:transparent;color:inherit}
-.selection-toolbar{display:flex;flex-direction:column;height:100vh;padding:8px 10px;gap:6px;font:13px/1.45 system-ui,sans-serif}
-.selection-header,.selection-actions,.selection-command{display:flex;align-items:center;gap:6px}
-.selection-header{justify-content:space-between}.selection-header span{opacity:.7;margin-left:9px;font-size:11px}
-.selection-actions button,.selection-command,.selection-icon,.selection-options form button{display:inline-flex;align-items:center;gap:5px;border:1px solid color-mix(in srgb,currentColor 16%,transparent);border-radius:6px;padding:5px 7px}
-.selection-actions button:hover,.selection-command:hover,.selection-icon:hover,.selection-options form button:hover{background:#7182e422}
-.selection-icon{padding:2px;border:0}.selection-details{overflow:auto;flex:1;min-height:0}.selection-details p{margin:3px 0 6px}
+.selection-surface,.selection-surface body{background:transparent;color:#253044;overflow:hidden}
+.selection-surface[data-theme=dark]{color:#ecedf8;color-scheme:dark}
+.selection-toolbar{height:100vh;border:1px solid #a1abc570;border-radius:9px;background:#f8faff;box-sizing:border-box;opacity:1;transition:opacity 190ms ease;font:12px/1.4 system-ui,sans-serif;overflow:hidden}
+.selection-surface[data-theme=dark] .selection-toolbar{background:#1d2330;border-color:#737f9d80}
+.selection-fading{opacity:0;pointer-events:none}
+.selection-badge{width:min(32px,100vw);height:min(32px,100vh);display:grid;place-items:center;background:#eef0ff;border-color:#b8bdf9;color:#5050b5}
+.selection-surface[data-theme=dark] .selection-badge{background:#30304e;color:#cccfff}
+.selection-symbol{width:100%;height:100%;display:grid;place-items:center}
+.selection-mini,.selection-card{padding:3px}
+.selection-actions{display:flex;align-items:center;justify-content:space-between;gap:1px;height:30px}
+.selection-actions button{height:26px;display:inline-flex;align-items:center;justify-content:center;gap:3px;border-radius:5px;padding:0 4px;white-space:nowrap}
+.selection-actions button svg{flex:none;width:13px;height:13px}.selection-actions button:hover,.selection-command:hover{background:#7182e428}
+.selection-card{padding:5px 7px;display:flex;flex-direction:column;gap:5px}.selection-card .selection-actions{justify-content:flex-start;gap:5px}
+.selection-details{overflow:auto;flex:1;min-height:0}.selection-details p{margin:3px 0 6px}
 .selection-options{display:grid;gap:6px;margin:3px 0 6px}.selection-options label{display:flex;align-items:center;gap:6px}
 .selection-options input:not([type=checkbox]),.selection-options select{min-width:0;border:1px solid #7e87a875;border-radius:5px;padding:3px 5px}
 .selection-options form{display:flex;align-items:center;gap:5px}.selection-options form label,.selection-options form input{flex:1}
+.selection-command,.selection-options form button{display:inline-flex;align-items:center;gap:5px;border:1px solid #a1abc570;border-radius:5px;padding:4px 6px}
 .selection-quote{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.78}
 .selection-answer{white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 7px;max-height:174px;overflow:auto}

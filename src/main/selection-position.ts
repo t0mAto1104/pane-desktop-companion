@@ -5,8 +5,8 @@ const overlaps = (a: Rectangle, b: Rectangle) =>
   a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 
 export function selectionPosition(work: Rectangle, pointer: Point, rectangles: PixelRect[], tall: boolean): Rectangle | null {
-  const width = Math.min(348, work.width);
-  const height = Math.min(tall ? 300 : 84, work.height);
+  const width = Math.min(tall ? 328 : 180, work.width);
+  const height = Math.min(tall ? 272 : 38, work.height);
   const anchor = rectangles.at(-1) ?? { ...pointer, width: 0, height: 0 };
   const fit = (x: number, y: number) => ({
     x: Math.max(work.x, Math.min(work.x + work.width - width, x)),

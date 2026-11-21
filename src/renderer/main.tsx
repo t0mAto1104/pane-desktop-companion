@@ -1,5 +1,6 @@
 import { SelectionToolbar } from './SelectionToolbar';
-import { VoicePanel } from './VoicePanel';
+import { VoiceDeviceSettings } from './VoiceDeviceSettings';
+import type { VoicePhase } from '../voice';
 import { Mic } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -62,6 +63,8 @@ function App() {
   const [lastSent, setLastSent] = useState<Run | null>(null);
   const [shortcut, setShortcut] = useState(true);
   const [text, setText] = useState('');
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>('ready');
+  const [voiceDraft, setVoiceDraft] = useState(false);
   const [error, setError] = useState('');
   const [overlay, setOverlay] = useState<'settings' | 'windows' | 'preview' | 'observation' | 'delete' | 'guide' | null>(null);
   const [sidebar, setSidebar] = useState(() => window.innerWidth >= 760);
@@ -93,7 +96,7 @@ function App() {
     activeRef.current = id;
     setActive(id);
     setMessages(rows);
-    if (resetText) { setText(''); setSendIssue(null); }
+    if (resetText) { setText(''); setVoiceDraft(false); setSendIssue(null); }
   }, []);
 
   useEffect(() => {
@@ -117,6 +120,7 @@ function App() {
         focusComposer();
       }),
       window.pane.subscribe('settings', apply),
+      window.pane.subscribe('voice', state => { setVoicePhase(state.phase); if (state.error) fail(new Error(state.error)); }),
       window.pane.subscribe('interaction', id => {
         void openChat(id, false).catch(fail);
         void refreshHistory();
@@ -306,14 +310,33 @@ function App() {
     } catch (reason) { fail(reason); } finally { setAccountBusy(false); }
   }
 
+  async function toggleVoice() {
+    try {
+      if (voicePhase === 'recording') { await call('voice:finish'); return; }
+      if (voicePhase !== 'ready') { await call('voice:cancel'); return; }
+      clearError();
+      const conversation = activeRef.current;
+      const transcript = await call('voice:start');
+      if (transcript && activeRef.current === conversation) {
+        setVoiceDraft(true);
+        setText(current => (current.trim() ? current.trimEnd() + '\n' + transcript : transcript).slice(0, 20_000));
+        focusComposer();
+      }
+    } catch (reason) { fail(reason); }
+  }
+
+  const voiceEditing = voicePhase === 'recording' || voicePhase === 'transcribing';
+  const voiceLabel = { ready: '语音提问', recording: '结束录音', transcribing: '取消转写', speaking: '停止朗读' }[voicePhase];
+
   async function submit(retry = false, textOnly = false) {
-    if (sendAttempt.current || run || (!retry && !text.trim() && (!capture.shot || textOnly))) return;
+    if (sendAttempt.current || run || voiceEditing || (!retry && !text.trim() && (!capture.shot || textOnly))) return;
     if (!connected || !model) { showSettings(); setError('连接账户并选择模型后即可发送。'); return; }
     clearError();
     const attempt = new AbortController();
     sendAttempt.current = attempt;
     setSending(true);
     const question = text;
+    const fromVoice = !retry && voiceDraft && !!question.trim();
     const shotId = textOnly ? null : capture.shot?.id ?? null;
     const use = compact || textOnly ? 'omit' : observationUse;
     try {
@@ -325,14 +348,14 @@ function App() {
       attempt.signal.throwIfAborted();
       const response = retry
         ? await call('chat:retry', id, shotId, use)
-        : await call('chat:send', id, question, shotId, use);
+        : fromVoice ? await call('chat:sendVoice', id, question) : await call('chat:send', id, question, shotId, use);
       if (response.kind === 'confirm-text') {
         if (!attempt.signal.aborted) setSendIssue({ reason: response.reason, retry });
         return;
       }
       const started = response.run;
       setLastSent(started);
-      if (!retry && !attempt.signal.aborted) setText(current => current === question ? '' : current);
+      if (!retry && !attempt.signal.aborted) { setText(current => current === question ? '' : current); setVoiceDraft(false); }
       setObservationUse('auto');
       if ((await call('snapshot')).run?.id === started.id) {
         if (latestRun.current?.id !== started.id) setDelta('');
@@ -413,7 +436,6 @@ function App() {
       <main>
         <div className="conversation-header">
           {!compact && <IconButton title={sidebar ? '隐藏侧栏' : '显示侧栏'} pressed={sidebar} onClick={() => setSidebar(!sidebar)}><PanelLeft size={17} /></IconButton>}
-          <IconButton title="语音提问" onClick={() => void call('voice:open').catch(fail)}><Mic size={16} /></IconButton>
           <span className="conversation-heading">{title}</span>
           <button className="button guide-launch" onClick={() => { clearError(); void call('guidance:open').catch(fail); }}>桌面指导</button>
           <button className="model-button" onClick={showSettings} title="配置连接和模型">
@@ -497,20 +519,30 @@ function App() {
               <img src={capture.shot.image} alt="" /><span><strong>手动截图</strong><small>{capture.shot.target.title}</small></span>
             </button><IconButton title="移除截图" onClick={removeImage}><X size={15} /></IconButton></div>}
             <textarea ref={input} value={text} maxLength={20_000} rows={2} placeholder="输入你的问题…" aria-label="输入你的问题"
-              onChange={event => setText(event.target.value)} onKeyDown={event => {
+              onChange={event => { setText(event.target.value); if (!event.target.value.trim()) setVoiceDraft(false); }} onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); void submit(); }
               }} />
             <div className="composer-footer"><div className="composer-mode">
-              <span className="visual-plan">本轮计划 · {plan}</span>
-              {!compact && (settings?.screenAwarenessEnabled || observationUse === 'image') && <label className="observe-attach">
+              <span className="visual-plan">本轮计划 · {voiceDraft ? '仅文字（语音转写）' : plan}</span>
+              {voicePhase !== 'ready' && <small className="voice-progress" role="status">
+                {{ recording: '正在录音', transcribing: '正在转写', speaking: '正在朗读' }[voicePhase]}</small>}
+              {!compact && !voiceDraft && (settings?.screenAwarenessEnabled || observationUse === 'image') && <label className="observe-attach">
                 <input type="checkbox" disabled={sending} checked={observationUse !== 'omit'}
                   onChange={event => setObservationUse(event.target.checked ? 'auto' : 'omit')} />
                 {observationUse === 'image' ? '本条必须附上观察截图' : '发送时使用最新屏幕观察'}</label>}
             </div>
+              <div className="composer-actions">
+                <button type="button" className="compose-mic" title={voiceLabel} aria-label={voiceLabel}
+                  aria-pressed={voicePhase !== 'ready'} disabled={voicePhase === 'ready' && (!!run || sending)}
+                  onClick={() => void toggleVoice()}>
+                  {voicePhase === 'transcribing' ? <LoaderCircle size={16} className="spin" /> :
+                    voicePhase === 'ready' ? <Mic size={17} /> : <Square size={13} fill="currentColor" />}
+                </button>
               {run || sending ? <button className="send stop" title={run ? '停止生成' : '停止准备'}
                 aria-label={run ? '停止生成' : '停止准备'} onClick={stop}><Square size={13} fill="currentColor" /></button>
-                : <button className="send" title="发送" aria-label="发送" disabled={!text.trim() && !capture.shot}
+                : <button className="send" title="发送" aria-label="发送" disabled={voiceEditing || (!text.trim() && !capture.shot)}
                   onClick={() => void submit()}><ArrowUp size={20} /></button>}
+              </div>
             </div>
           </div>
           {receipt && <div className="sent-visual" role="status">上轮实际来源 · {visualLabels[receipt.source]}
@@ -584,14 +616,14 @@ function App() {
             <label className="check-field"><input type="checkbox" checked={settings.autoCapture} onChange={event => void change({ autoCapture: event.target.checked })} /> 快捷键唤出时捕获目标窗口</label>
           </section>
           <section><h3>全局划词</h3>
-            <label className="check-field"><input type="checkbox" checked={settings.selectionEnabled}
-              onChange={event => void change({ selectionEnabled: event.currentTarget.checked })} />允许 Ctrl+Shift+Q 读取选区</label>
-            <label className="check-field"><input type="checkbox" disabled={!settings.selectionEnabled} checked={settings.selectionAuto}
-              onChange={event => void change({ selectionAuto: event.currentTarget.checked })} />选中文字后自动显示工具栏</label>
+            <label className="check-field"><input type="checkbox" checked={settings.selectionEnabled && settings.selectionAuto}
+              onChange={event => { const enabled = event.currentTarget.checked;
+                void change({ selectionEnabled: enabled, selectionAuto: enabled }); }} />开启自动划词</label>
             <label>翻译目标 <select value={settings.selectionLanguage}
               onChange={event => void change({ selectionLanguage: event.currentTarget.value === 'en' ? 'en' : 'zh' })}>
               <option value="zh">简体中文</option><option value="en">英文</option></select></label>
           </section>
+          <VoiceDeviceSettings settings={settings} update={patch => void change(patch)} />
           <section><h3>屏幕感知</h3>
             <label className="check-field"><input type="checkbox" checked={settings.screenAwarenessEnabled}
               onChange={event => { setObservationUse('auto'); void change({ screenAwarenessEnabled: event.target.checked }); }} /> 观察用户绑定的窗口</label>
@@ -619,4 +651,4 @@ function App() {
 
 const mascot = window.location.hash === '#mascot';
 if (mascot) document.documentElement.classList.add('mascot-surface');
-createRoot(document.getElementById('root')!).render(window.location.hash === '#voice' ? <VoicePanel /> : window.location.hash === '#selection' ? <SelectionToolbar /> : mascot ? <Mascot /> : <App />);
+createRoot(document.getElementById('root')!).render(window.location.hash === '#selection' ? <SelectionToolbar /> : mascot ? <Mascot /> : <App />);

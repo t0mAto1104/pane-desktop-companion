@@ -225,3 +225,9 @@ main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .guide-steps { margin-top: 5px; font-size: 12px; }
 .guide-steps li[aria-current] { color: var(--accent); font-weight: 700; }
 .guide-section progress { width: 100%; accent-color: var(--accent); height: 8px; }
+.composer-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+.compose-mic { display: grid; place-items: center; color: var(--muted); background: transparent; border: 0; border-radius: 9px; width: 32px; height: 32px; }
+.compose-mic:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.compose-mic[aria-pressed="true"] { background: var(--wash); color: var(--accent); }
+.compose-mic:disabled { opacity: .45; }
+.voice-progress { color: var(--accent); font-size: 11px; }

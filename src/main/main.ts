@@ -26,6 +26,7 @@ import { SelectionToolbar } from './selection-toolbar';
 import { SelectionManager } from './selection-manager';
 import type { SelectionActions } from '../selection';
 import { VoiceManager } from './voice-manager';
+import { voiceSettings } from '../voice';
 
 const accelerator = 'Control+Shift+Space';
 const rendererFile = join(__dirname, '../renderer/index.html');
@@ -171,7 +172,7 @@ function syncCompanion() {
 function show(panel?: WindowSurface['panel']) {
   if (!win || win.isDestroyed() || desktopUnavailable()) return;
   selection?.close();
-  voice?.close();
+  voice?.cancel();
   if (win.isMinimized()) win.restore();
   if (compact) {
     compact = false;
@@ -186,6 +187,7 @@ function show(panel?: WindowSurface['panel']) {
 }
 
 function hide() {
+  voice?.cancel();
   if (inputSessions.pending) {
     supersedeCapture();
     if (capture.pending) setCapture({ pending: false });
@@ -196,7 +198,7 @@ function hide() {
 
 function showCompact(panel?: WindowSurface['panel']) {
   selection?.close();
-  voice?.close();
+  voice?.cancel();
   if (win.isMinimized()) win.restore();
   if (!compact) normalBounds = win.getBounds();
   compact = true;
@@ -316,10 +318,10 @@ const actions: Actions = {
         next.changeThreshold !== settings.changeThreshold || next.maxObservations !== settings.maxObservations) {
       invalidateSend('屏幕观察设置已变更，请重新发送。');
     }
-    Object.assign(next, selectionOptions({ ...settings, ...patch }));
+    Object.assign(next, selectionOptions({ ...settings, ...patch }), voiceSettings({ ...settings, ...patch }));
     if (patch.denied !== undefined) {
       selection?.close();
-      voice?.close();
+      voice?.cancel();
       next.denied = denyList(patch.denied);
       cancelTools();
       invalidateSend('禁止捕获名单已变更，请重新发送。');
@@ -332,13 +334,20 @@ const actions: Actions = {
     return saveSettings(next);
   },
   'window:hide': hide,
-  'voice:open': () => {
-    if (!ready || quitting || desktopUnavailable() || credentialPrompt) return;
-    selection.close();
-    const target = boundTarget() ?? capture.target;
-    hide();
-    void voice.show(target);
+  'voice:devices': () => {
+    if (desktopUnavailable()) throw new UserError('请先解锁 Windows 桌面。');
+    return voice.list();
   },
+  'voice:start': () => {
+    assertIdle();
+    if (!ready || quitting || desktopUnavailable() || credentialPrompt || !win.isVisible() || !win.isFocused()) {
+      throw new UserError('请在 Pane 对话框内开始录音。');
+    }
+    selection.close();
+    return voice.start(settings);
+  },
+  'voice:finish': () => voice.stopRecording(),
+  'voice:cancel': () => voice.cancel(),
   'companion:appearance': () => companion.appearance(),
   'companion:toggle': toggleCompanion,
   'companion:expand': panel => {
@@ -349,7 +358,7 @@ const actions: Actions = {
   'capture:bind': async id => {
     if (desktopUnavailable()) throw new UserError('请先解锁 Windows 桌面。');
     selection?.close();
-    voice?.close();
+    voice?.cancel();
     cancelTools();
     invalidateSend('目标窗口已切换，请重新发送。');
     if (id === null) {
@@ -489,12 +498,13 @@ const actions: Actions = {
   'chat:list': () => store.list(),
   'chat:open': id => {
     if (!store.has(id)) throw new UserError('该对话已删除。');
-    if (activeId !== id) invalidateSend('对话已切换，请重新发送。');
+    if (activeId !== id) { voice.cancel(); invalidateSend('对话已切换，请重新发送。'); }
     activeId = id;
     store.write('active', id);
     return store.messages(id);
   },
   'chat:new': () => {
+    voice.cancel();
     invalidateSend('对话已切换，请重新发送。');
     const item = store.create();
     activeId = item.id;
@@ -505,11 +515,18 @@ const actions: Actions = {
     if (inputSessions.conversationId === id) invalidateSend('该对话已删除。');
     store.remove(id);
     chat.deleteImages(id);
-    if (activeId === id) activeId = null;
+    if (activeId === id) { voice.cancel(); activeId = null; }
   },
   'chat:send': (id, text, shotId, use) => input.send(id, text, shotId, false, use),
+  'chat:sendVoice': async (id, text) => {
+    if (voice.busy || typeof text !== 'string' || !text.trim()) throw new UserError('请先完成听写并确认你的问题。');
+    const generation = voice.generation;
+    const response = await input.send(id, text, null, false, 'omit', true);
+    if (response.kind === 'started') voice.track(response.run, settings, generation);
+    return response;
+  },
   'chat:retry': (id, shotId, use) => input.send(id, '', shotId, true, use),
-  'chat:stop': () => { invalidateSend('已停止准备本轮请求。'); chat.stop(); },
+  'chat:stop': () => { voice.cancel(); invalidateSend('已停止准备本轮请求。'); chat.stop(); },
 };
 
 function updateTray() {
@@ -551,6 +568,7 @@ function launch() {
   });
   win.on('minimize', hide);
   win.on('focus', () => { overlay.hide(); tracker.hide(); });
+  win.on('blur', () => voice?.cancelDictation());
   companion = new CompanionWindow(rendererFile, join(__dirname, 'preload.cjs'), store.read('companion.position'),
     point => store.write('companion.position', point), () => {
       if (compact && win.isVisible() && !win.isMaximized()) win.setBounds(companion.panelBounds);
@@ -563,7 +581,7 @@ function launch() {
   const bar = new SelectionToolbar(rendererFile, join(__dirname, 'preload.cjs'), () => selection.close());
   selection = new SelectionManager({
     reader: new SelectionReader(captureBridge), toolbar: bar, settings: () => settings, bound: boundTarget,
-    blocked: () => quitting || desktopUnavailable() || !ready || !!voice?.isOpen,
+    blocked: () => quitting || desktopUnavailable() || !ready || !!voice?.busy,
     validate: (target, signal) => captureBridge.validate(target, settings.denied, signal),
     submit: (target, text, request, signal) => {
       const intent = { explain: '解释选区', translate: request.language === 'zh' ? '翻译成简体中文' : '翻译成英文',
@@ -588,20 +606,18 @@ function launch() {
       return { ok: true, value: await handler(...args) };
     } catch (error) { return { ok: false, error: diagnostic(error) }; }
   });
-  voice = new VoiceManager({
-    html: rendererFile, preload: join(__dirname, 'preload.cjs'), changed: () => selection.configure(),
-    blocked: () => quitting || desktopUnavailable() || !ready,
-    submit: (text, target, signal) => input.external('voice', text, target, false, signal,
-      async check => { if (target) await captureBridge.validate(target, settings.denied, check); }),
-    reply: run => store.lastTurn(run.conversationId)[1],
-  });
+  voice = new VoiceManager(executable,
+    state => { send('voice', state); selection.configure(); },
+    run => !quitting && !desktopUnavailable() && win.isVisible() && activeId === run.conversationId,
+    run => store.lastTurn(run.conversationId)[1],
+  );
   chat = new Chat(store, ai, update => {
     send('chat', update); selection.onChat(update); voice.onChat(update); syncCompanion();
   });
   observations.configure(null, settings, settings.denied);
   const pauseDesktop = () => {
     selection.close();
-    voice.close();
+    voice.cancel();
     cancelTools();
     invalidateSend('Windows 桌面不可用，本轮发送已停止。');
     chat.stop();
@@ -650,7 +666,7 @@ app.setAppUserModelId('local.pane.desktop-companion');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => show());
-  app.on('before-quit', () => { quitting = true; selection?.close(); voice?.close(); companion?.savePosition(); cancelTools(); invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
+  app.on('before-quit', () => { quitting = true; selection?.close(); voice?.cancel(); companion?.savePosition(); cancelTools(); invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
   app.on('will-quit', () => { globalShortcut.unregisterAll(); store?.close(); });
   app.whenReady().then(launch).catch(() => app.exit(1));
 }
