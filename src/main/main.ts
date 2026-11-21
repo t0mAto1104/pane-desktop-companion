@@ -213,8 +213,9 @@ async function onHotkey() {
 }
 
 function applySettings() {
-  nativeTheme.themeSource = settings.theme;
-  win.setAlwaysOnTop(compact || settings.pinned);
+  if (nativeTheme.themeSource !== settings.theme) nativeTheme.themeSource = settings.theme;
+  const pinned = compact || settings.pinned;
+  if (win.isAlwaysOnTop() !== pinned) win.setAlwaysOnTop(pinned);
   syncCompanion();
   updateTray();
 }
@@ -249,6 +250,7 @@ async function beginChat(id: string, text: string, shotId: string | null, retry:
   if (id !== activeId) throw new UserError('请先打开此对话。');
   if (typeof text !== 'string' || text.length > 20_000) throw new UserError('每条消息最多 20,000 个字符。');
   if (use !== 'auto' && use !== 'omit' && use !== 'image') throw new UserError('屏幕上下文选项无效。');
+  ai.assertResponseReady(settings.provider);
   const selected = use === 'image' ? null : selectedShot(shotId);
   const bound = boundTarget();
   const request = { id, controller: new AbortController() };
@@ -440,10 +442,10 @@ const actions: Actions = {
     } finally { credentialPrompt = false; }
   },
   'account:removeKey': () => { assertIdle(); return ai.removeKey(); },
-  'account:models': async () => {
+  'account:models': async force => {
     const provider = settings.provider;
-    const models = await ai.models(provider, true);
-    if (settings.provider === provider && !models.some(model => model.id === settings.models[provider])) {
+    const models = await ai.models(provider, force === true);
+    if (models.length && settings.provider === provider && !models.some(model => model.id === settings.models[provider])) {
       const preferred = models.find(model => /^gpt-[\d.]+-mini$/.test(model.id)) ?? models[0];
       saveSettings({ ...settings, models: { ...settings.models, [provider]: preferred?.id } });
     }
@@ -527,7 +529,7 @@ function launch() {
   screen.on('display-metrics-changed', displaysChanged);
   screen.on('display-added', displaysChanged);
   screen.on('display-removed', displaysChanged);
-  ai = new AI(store, dataDir, () => send('account'));
+  ai = new AI(store, dataDir, account => send('account', account));
   chat = new Chat(store, ai, update => { send('chat', update); syncCompanion(); });
   observations.configure(null, settings, settings.denied);
   const pauseDesktop = () => {

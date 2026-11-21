@@ -79,7 +79,6 @@ function App() {
 
   const apply = useCallback((value: Settings) => { settingsRef.current = value; providerRef.current = value.provider; setSettings(value); }, []);
   const fail = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : '操作失败，请重试。'), []);
-  const refreshAccount = useCallback(() => call('account:state').then(setAccount).catch(fail), [fail]);
   const refreshHistory = useCallback(() => call('chat:list').then(setHistory).catch(fail), [fail]);
 
   const openChat = useCallback(async (id: string, resetText = true) => {
@@ -95,6 +94,7 @@ function App() {
   useEffect(() => {
     let observed = false;
     let shown = false;
+    let accountEvent = false;
     const subscriptions = [
       window.pane.subscribe('capture', setCapture),
       window.pane.subscribe('observation', state => { observed = true; setObservation(state); }),
@@ -110,7 +110,7 @@ function App() {
         focusComposer();
       }),
       window.pane.subscribe('settings', apply),
-      window.pane.subscribe('account', () => { void refreshAccount(); }),
+      window.pane.subscribe('account', state => { accountEvent = true; setAccount(state); }),
       window.pane.subscribe('chat', update => {
         setLastSent(update.run);
         if (update.type === 'delta') {
@@ -138,10 +138,10 @@ function App() {
       if (state.conversationId && !viewVersion.current) await openChat(state.conversationId);
     }).catch(fail);
     void refreshHistory();
-    void refreshAccount();
+    void call('account:state').then(state => { if (!accountEvent) setAccount(state); }).catch(fail);
     focusComposer();
     return () => subscriptions.forEach(unsubscribe => unsubscribe());
-  }, [apply, fail, openChat, refreshAccount, refreshHistory]);
+  }, [apply, fail, openChat, refreshHistory]);
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -154,10 +154,10 @@ function App() {
   const provider = settings?.provider ?? 'chatgpt';
   const model = settings?.models[provider] ?? '';
   const connected = provider === 'chatgpt' ? account?.status === 'connected' && account.sharing : !!account?.apiKey;
-  const refreshModels = useCallback(async (forProvider: Settings['provider']) => {
+  const refreshModels = useCallback(async (forProvider: Settings['provider'], force = false) => {
     setModelBusy(true);
     try {
-      const next = await call('account:models');
+      const next = await call('account:models', force);
       const snapshot = await call('snapshot');
       if (providerRef.current !== forProvider) return;
       setModels(next);
@@ -170,11 +170,12 @@ function App() {
     }
   }, [apply, fail]);
 
+  const accountProvider = settings?.provider;
   useEffect(() => {
     setModels([]);
     setModelBusy(false);
-    if (connected) void refreshModels(provider);
-  }, [connected, provider, refreshModels]);
+    if (connected && accountProvider) void refreshModels(accountProvider);
+  }, [connected, accountProvider, refreshModels]);
 
   useEffect(() => {
     const area = scroller.current;
@@ -533,7 +534,7 @@ function App() {
             </>}
             {connected && <div className="model-field"><label className="field">模型<select aria-label="模型" value={model} disabled={modelBusy || !models.length} onChange={event => { void call('account:selectModel', event.target.value).then(apply).catch(fail); }}>
               <option value="">{modelBusy ? '正在读取模型…' : '选择模型'}</option>{model && !models.some(item => item.id === model) && <option value={model}>{model}</option>}{models.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-            </select></label><IconButton title="刷新模型" disabled={modelBusy} onClick={() => { clearError(); void refreshModels(provider); }}><RefreshCw size={16} className={modelBusy ? 'spin' : ''} /></IconButton></div>}
+            </select></label><IconButton title="刷新模型" disabled={modelBusy} onClick={() => { clearError(); void refreshModels(provider, true); }}><RefreshCw size={16} className={modelBusy ? 'spin' : ''} /></IconButton></div>}
           </section>
           <section><h3>窗口与外观</h3>
             <label className="field">主题<select aria-label="主题" value={settings.theme} onChange={event => void change({ theme: event.target.value as Settings['theme'] })}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
