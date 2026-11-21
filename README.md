@@ -4,7 +4,7 @@ Pane 是一个本地运行的悬浮窗口问答工具。用全局快捷键捕获
 
 ## 下载与预览
 
-[下载 v0.1.0 Windows x64 基线安装包](https://github.com/t0mAto1104/pane-desktop-companion/releases/tag/v0.1.0)
+[下载最新 Windows x64 安装包](https://github.com/t0mAto1104/pane-desktop-companion/releases/latest)
 
 | 浅色 | 深色 |
 | --- | --- |
