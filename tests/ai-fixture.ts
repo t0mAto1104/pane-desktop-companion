@@ -9,6 +9,7 @@ export function diagnostic(error: unknown) {
 }
 
 export class AI {
+  private pausedOnce = false;
   async account() { return { status: 'connected', sharing: true, label: '本地验收', apiKey: false }; }
   signIn() { return this.account(); }
   cancelSignIn() {}
@@ -27,25 +28,37 @@ export class AI {
     if (question?.startsWith('观察验收：')) {
       const images = input.flatMap(item => Array.isArray(item.content)
         ? item.content.flatMap(part => part.type === 'input_image' ? [part.image_url] : []) : []);
-      assert.ok(images.length <= 1, 'awareness suppresses the older image history');
+      assert.ok(images.length <= 1, 'only the current turn may provide pixels');
+      const note = input.at(-2);
+      assert.equal(note?.role, 'developer');
+      assert.match(String(note?.content), images.length ? /visual evidence/ : /Do not claim to see the current screen/);
+      if (question === '观察验收：中断后重试' && !this.pausedOnce) {
+        this.pausedOnce = true;
+        onDelta('已发送测试图片，等待停止');
+        await setTimeout(30_000, undefined, { signal });
+      }
       const fingerprint = images[0] ? createHash('sha256').update(images[0]).digest('hex').slice(0, 12) : '';
       const answer = '当前请求：' + images.length + ' 张' + (fingerprint ? ' · ' + fingerprint : '');
       onDelta(answer);
       return answer;
     }
-    assert.ok(input.some(item => Array.isArray(item.content) &&
-      item.content.some(part => part.type === 'input_image' && part.image_url.startsWith('data:image/jpeg;base64,/9j/'))));
-    const followup = input.at(-1)?.content === '这是多少手？';
+    if (question === '这个模拟交易窗口显示了什么？') {
+      assert.ok(Array.isArray(current) && current.some(part =>
+        part.type === 'input_image' && part.image_url.startsWith('data:image/jpeg;base64,/9j/')));
+    } else {
+      assert.ok(!input.some(item => Array.isArray(item.content)), 'a text-only turn does not attach history images');
+      assert.match(String(input.at(-2)?.content), /Do not claim to see the current screen/);
+    }
+    const followup = question === '这是多少手？';
     if (followup) {
       assert.ok(input.some(item => item.role === 'assistant' && String(item.content).includes('SIM-101')));
-      assert.ok(input.some(item => Array.isArray(item.content) &&
-        item.content.some(part => part.type === 'input_text' && part.text === '这个模拟交易窗口显示了什么？')));
+      assert.ok(input.some(item => item.role === 'user' && item.content === '这个模拟交易窗口显示了什么？'));
     }
     if (input.at(-1)?.content === '现在停止') {
       onDelta('可保留的部分回答');
       await setTimeout(30_000, undefined, { signal });
     }
-    const chunks = followup ? ['模拟持仓是 ', '**10 手**。'] : ['标的为 **SIM-101**。\n\n', '```text\n125.40\n```'];
+    const chunks = followup ? ['模拟持仓是 ', '**10 手**。'] : ['标的为 **SIM-101**，模拟持仓为 10 手。\n\n', '```text\n125.40\n```'];
     for (const chunk of chunks) {
       await setTimeout(180, undefined, { signal });
       onDelta(chunk);

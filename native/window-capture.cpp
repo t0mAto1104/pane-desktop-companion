@@ -22,6 +22,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -203,7 +204,7 @@ void validateSize(winrt::Windows::Graphics::SizeInt32 size) {
 
 class WindowCapture {
 public:
-    explicit WindowCapture(HWND hwnd, bool monitoring = false) {
+    explicit WindowCapture(HWND hwnd, bool monitoring = false) : monitoring(monitoring) {
         if (!GraphicsCaptureSession::IsSupported()) throw Failure("unsupported");
         auto item = get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
         check_hresult(item->CreateForWindow(hwnd, guid_of<GraphicsCaptureItem>(), put_abi(target)));
@@ -222,14 +223,7 @@ public:
         graphics = inspectable.as<Direct3D11::IDirect3DDevice>();
         poolSize = target.Size();
         validateSize(poolSize);
-        pool = Direct3D11CaptureFramePool::CreateFreeThreaded(graphics, CaptureFormat, 2, poolSize);
-        session = pool.CreateCaptureSession(target);
-        using winrt::Windows::Foundation::Metadata::ApiInformation;
-        const auto captureClass = L"Windows.Graphics.Capture.GraphicsCaptureSession";
-        if (ApiInformation::IsPropertyPresent(captureClass, L"IsCursorCaptureEnabled")) session.IsCursorCaptureEnabled(false);
-        if (monitoring && ApiInformation::IsPropertyPresent(captureClass, L"MinUpdateInterval"))
-            session.MinUpdateInterval(std::chrono::milliseconds(120));
-        session.StartCapture();
+        startFrames();
     }
 
     void ensureOpen() const {
@@ -238,12 +232,21 @@ public:
 
     // For a static window WGC may produce no additional frames; retain the last sample.
     bool readLatest() {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        using Clock = std::chrono::steady_clock;
+        const auto deadline = Clock::now() + std::chrono::seconds(2);
+        auto retryAt = Clock::time_point::max();
+        bool restarted = false;
         do {
             ensureOpen();
             auto frame = pool.TryGetNextFrame();
             if (!frame) {
                 if (staging) return false;
+                if (!restarted && Clock::now() >= retryAt) {
+                    // A static resized window can stop delivering frames to a recreated pool.
+                    // Start a fresh session once, retaining the same D3D device.
+                    startFrames();
+                    restarted = true;
+                }
                 std::this_thread::sleep_for(std::chrono::milliseconds(15));
                 continue;
             }
@@ -261,6 +264,7 @@ public:
                 staging = nullptr;
                 pool.Recreate(graphics, CaptureFormat, 2, size);
                 poolSize = size;
+                retryAt = Clock::now() + std::chrono::milliseconds(350);
                 continue;
             }
 
@@ -318,6 +322,18 @@ public:
     }
 
 private:
+    void startFrames() {
+        if (session) session.Close();
+        if (pool) pool.Close();
+        pool = Direct3D11CaptureFramePool::CreateFreeThreaded(graphics, CaptureFormat, 2, poolSize);
+        session = pool.CreateCaptureSession(target);
+        using winrt::Windows::Foundation::Metadata::ApiInformation;
+        const auto captureClass = L"Windows.Graphics.Capture.GraphicsCaptureSession";
+        if (ApiInformation::IsPropertyPresent(captureClass, L"IsCursorCaptureEnabled")) session.IsCursorCaptureEnabled(false);
+        if (monitoring && ApiInformation::IsPropertyPresent(captureClass, L"MinUpdateInterval"))
+            session.MinUpdateInterval(std::chrono::milliseconds(120));
+        session.StartCapture();
+    }
     template <typename Read>
     std::vector<uint8_t> readPixels(Read read) {
         if (!staging) throw Failure("no_frame");
@@ -331,6 +347,7 @@ private:
         return read(static_cast<BYTE*>(mapped.pData), mapped.RowPitch);
     }
 
+    const bool monitoring;
     GraphicsCaptureItem target{nullptr};
     com_ptr<ID3D11Device> device;
     com_ptr<ID3D11DeviceContext> context;
@@ -342,8 +359,19 @@ private:
     std::shared_ptr<std::atomic_bool> closed = std::make_shared<std::atomic_bool>(false);
 };
 
+bool activeDesktop() {
+    HDESK desktop = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    if (!desktop) return false;
+    wchar_t input[256]{}, current[256]{};
+    const bool available = GetUserObjectInformationW(desktop, UOI_NAME, input, sizeof(input), nullptr) &&
+        GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, current, sizeof(current), nullptr);
+    CloseDesktop(desktop);
+    return available && sameName(input, current);
+}
+
 WindowInfo verifyWindow(HWND hwnd, const std::wstring& id, DWORD assistant, const std::vector<std::wstring>& denied,
                         const std::wstring& expectedExecutable = {}) {
+    if (!activeDesktop()) throw Failure("desktop_locked");
     auto current = inspect(hwnd, assistant, denied);
     if (!current || windowId(*current) != id ||
         (!expectedExecutable.empty() && !sameName(current->executable, expectedExecutable))) throw Failure("target_gone");
@@ -477,10 +505,17 @@ int wmain(int argc, wchar_t** argv) {
         if (argc < 3) throw Failure("invalid_request");
         const std::wstring command = argv[1];
         const auto assistant = std::stoul(argv[2]);
-        const bool targetCommand = command == L"capture" || command == L"observe";
+        const bool targetCommand = command == L"capture" || command == L"observe" || command == L"verify";
         if (targetCommand && argc < 4) throw Failure("invalid_request");
+        int firstDenied = targetCommand ? 4 : 3;
+        std::wstring expectedExecutable;
+        if (targetCommand && argc > firstDenied && std::wstring_view(argv[firstDenied]) == L"--expected-executable") {
+            if (argc <= firstDenied + 1) throw Failure("invalid_request");
+            expectedExecutable = argv[firstDenied + 1];
+            firstDenied += 2;
+        }
         std::vector<std::wstring> denied;
-        for (int index = (targetCommand ? 4 : 3); index < argc; ++index) denied.emplace_back(argv[index]);
+        for (int index = firstDenied; index < argc; ++index) denied.emplace_back(argv[index]);
 
         if (command == L"credential" && argc == 4) { promptKey(reinterpret_cast<HWND>(static_cast<uintptr_t>(std::stoull(argv[3]))), assistant); } else if (command == L"foreground") {
             auto window = inspect(GetAncestor(GetForegroundWindow(), GA_ROOT), assistant, denied);
@@ -503,7 +538,11 @@ int wmain(int argc, wchar_t** argv) {
         } else if (targetCommand) {
             const std::wstring id = argv[3];
             const auto hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(std::stoull(id)));
-            const auto current = verifyWindow(hwnd, id, assistant, denied);
+            const auto current = verifyWindow(hwnd, id, assistant, denied, expectedExecutable);
+            if (command == L"verify") {
+                printJson(json(current));
+                return 0;
+            }
             init_apartment(apartment_type::multi_threaded);
             if (command == L"observe") {
                 observe(hwnd, id, assistant, denied, current.executable);

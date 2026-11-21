@@ -193,3 +193,9 @@ main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .observe-attach input { accent-color: var(--accent); }
 .observation-fields { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; }
 .observation-fields input { width: 100%; border: 1px solid var(--edge); border-radius: 7px; padding: 5px 7px; color: var(--ink); background: var(--surface); }
+.composer-mode { min-width: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; color: var(--muted); font-size: 11px; }
+.visual-plan { color: var(--ink); font-weight: 600; }
+.sent-visual { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 4px 0; }
+.capture-notice { flex-wrap: wrap; }
+.capture-notice .button-row { margin: 0; }
+.capture-notice .button { padding: 3px 8px; }

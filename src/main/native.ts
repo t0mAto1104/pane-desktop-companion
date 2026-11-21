@@ -4,7 +4,20 @@ import type { Screenshot, Target } from '../shared';
 
 export class UserError extends Error {}
 
+export class CaptureError extends UserError {
+  constructor(readonly code: string, message: string) { super(message); }
+}
+
+export function sameTarget(actual: Target, expected: Target) {
+  return actual.id === expected.id && actual.executable.toLowerCase() === expected.executable.toLowerCase();
+}
+
+function windowArgs(target: Target, denied: string[]) {
+  return [target.id, '--expected-executable', target.executable, ...denied];
+}
+
 const messages: Record<string, string> = {
+  desktop_locked: 'Windows 桌面已锁定或不可访问。解锁后可恢复屏幕观察。',
   no_target: '没有可捕获的前台窗口。请先切换到目标窗口，或在窗口列表中选择。',
   target_gone: '目标窗口已关闭或不可用。请重新选择窗口。',
   process_unavailable: '无法验证目标应用的身份。请切换到可访问的普通窗口。',
@@ -19,27 +32,28 @@ const messages: Record<string, string> = {
   key_dialog_failed: '无法打开 Windows 凭据输入框。',
 };
 
-function nativeDiagnostic(code: string, fallback: string): UserError {
-  if (Object.hasOwn(messages, code)) return new UserError(messages[code]);
+function nativeDiagnostic(code: string, fallback: string, fallbackCode = 'native_failed'): CaptureError {
+  if (Object.hasOwn(messages, code)) return new CaptureError(code, messages[code]);
   if (/^capture_hresult:[0-9A-F]{8}$/.test(code)) {
-    return new UserError("Windows 无法捕获该窗口（0x" + code.split(':')[1] + "）。请确认窗口开放且允许捕获。");
+    return new CaptureError("capture_hresult", "Windows 无法捕获该窗口（0x" + code.split(':')[1] + "）。请确认窗口开放且允许捕获。");
   }
-  return new UserError(fallback);
+  return new CaptureError(fallbackCode, fallback);
 }
 
 export class NativeBridge {
   constructor(private readonly path: string) {}
 
-  private run(command: string, args: string[], timeout = 5000): Promise<Buffer> {
+  private run(command: string, args: string[], timeout = 5000, signal?: AbortSignal): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       execFile(this.path, [command, String(process.pid), ...args], {
-        windowsHide: true, encoding: 'buffer', timeout, maxBuffer: 13 * 1024 * 1024,
+        windowsHide: true, encoding: 'buffer', timeout, signal, maxBuffer: 13 * 1024 * 1024,
       }, (error, stdout, stderr) => {
+        if (signal?.aborted) return reject(signal.reason);
         if (!error) return resolve(stdout);
         const code = stderr.toString().trim();
         if (code === 'key_cancelled') return resolve(Buffer.alloc(0));
         reject(nativeDiagnostic(code, error.killed ? 'Windows 操作超时。请重试。'
-          : error.code === 'ENOENT' ? '缺少 Windows 捕获组件。请重新安装应用。' : 'Windows 操作失败。请重试。'));
+          : error.code === 'ENOENT' ? '缺少 Windows 捕获组件。请重新安装应用。' : 'Windows 操作失败。请重试。', error.killed ? 'timeout' : 'native_failed'));
       });
     });
   }
@@ -47,12 +61,20 @@ export class NativeBridge {
   async foreground(denied: string[]): Promise<Target> { return JSON.parse((await this.run('foreground', denied)).toString()); }
   async list(denied: string[]): Promise<Target[]> { return JSON.parse((await this.run('list', denied)).toString()); }
 
-  async capture(target: Target, denied: string[]): Promise<Screenshot> {
-    const result = await this.run('capture', [target.id, ...denied]);
+  async validate(target: Target, denied: string[], signal?: AbortSignal): Promise<void> {
+    const verified: Target = JSON.parse((await this.run('verify', windowArgs(target, denied), 1000, signal)).toString());
+    if (!sameTarget(verified, target)) throw new CaptureError('target_gone', messages.target_gone);
+  }
+
+  async capture(target: Target, denied: string[], signal?: AbortSignal, timeout = 5000): Promise<Screenshot> {
+    const capturedAt = Date.now();
+    const result = await this.run('capture', windowArgs(target, denied), timeout, signal);
     const separator = result.indexOf(10);
     const jpeg = result.subarray(separator + 1);
-    if (separator < 1 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new UserError('Windows 返回了无效的截图。');
-    return { id: randomUUID(), target: JSON.parse(result.subarray(0, separator).toString()), image: 'data:image/jpeg;base64,' + jpeg.toString('base64') };
+    if (separator < 1 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new CaptureError('invalid_image', 'Windows 返回了无效的截图。');
+    const verified: Target = JSON.parse(result.subarray(0, separator).toString());
+    if (!sameTarget(verified, target)) throw new CaptureError('target_gone', messages.target_gone);
+    return { id: randomUUID(), target: verified, image: 'data:image/jpeg;base64,' + jpeg.toString('base64'), capturedAt };
   }
 
   observe(target: Target, denied: string[]): CaptureWorker {
@@ -94,12 +116,12 @@ class NativeCaptureWorker implements CaptureWorker {
   private stderr = '';
 
   constructor(path: string, private readonly target: Target, denied: string[]) {
-    this.child = spawn(path, ['observe', String(process.pid), target.id, ...denied], { windowsHide: true, stdio: 'pipe' });
+    this.child = spawn(path, ['observe', String(process.pid), ...windowArgs(target, denied)], { windowsHide: true, stdio: 'pipe' });
     this.child.stdout.on('data', (chunk: Buffer) => this.onData(chunk));
     this.child.stderr.on('data', (chunk: Buffer) => { this.stderr = (this.stderr + chunk.toString()).slice(0, 512); });
     this.child.stdin.on('error', () => undefined); // The exit handler supplies the diagnostic from stderr.
-    this.child.once('error', () => this.abort(new UserError('无法启动 Windows 观察组件。可尝试手动刷新截图。')));
-    this.child.once('close', () => this.abort(nativeDiagnostic(this.stderr.trim(), 'Windows 观察组件已退出。可尝试手动刷新截图。')));
+    this.child.once('error', () => this.abort(new CaptureError('native_failed', '无法启动 Windows 观察组件。可尝试手动刷新截图。')));
+    this.child.once('close', () => this.abort(nativeDiagnostic(this.stderr.trim(), 'Windows 观察组件已退出。可尝试手动刷新截图。', 'worker_exit')));
   }
 
   async sample(): Promise<FrameSample> {
@@ -110,7 +132,7 @@ class NativeCaptureWorker implements CaptureWorker {
   async jpeg(): Promise<Screenshot> {
     const { header, payload } = await this.request('jpeg');
     if (payload[0] !== 0xff || payload[1] !== 0xd8) throw new UserError('Windows 返回了无效的观察截图。');
-    return { id: randomUUID(), target: header.target, image: 'data:image/jpeg;base64,' + payload.toString('base64') };
+    return { id: randomUUID(), target: header.target, image: 'data:image/jpeg;base64,' + payload.toString('base64'), capturedAt: Date.now() };
   }
 
   close() { this.abort(new UserError('屏幕观察已停止。')); }
@@ -130,7 +152,7 @@ class NativeCaptureWorker implements CaptureWorker {
     if (this.failure) return Promise.reject(this.failure);
     if (this.pending) return Promise.reject(new UserError('已有屏幕观察请求正在处理。'));
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.abort(new UserError('Windows 观察超时。可尝试手动刷新截图。')), 5000);
+      const timer = setTimeout(() => this.abort(new CaptureError('timeout', 'Windows 观察超时。可尝试手动刷新截图。')), 5000);
       this.pending = { kind, resolve, reject, timer, prefix: Buffer.alloc(0), chunks: [], length: 0 };
       this.child.stdin.write(kind + '\n');
     });

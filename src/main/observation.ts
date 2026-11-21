@@ -1,6 +1,7 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import type { AwarenessOptions, Observation, ObservationState, ScreenRegion, Screenshot, Target } from '../shared';
-import { SAMPLE_WIDTH, SAMPLE_HEIGHT, type CaptureWorker, type FrameSample } from './native';
+import { CaptureError, sameTarget, SAMPLE_WIDTH, SAMPLE_HEIGHT, type CaptureWorker, type FrameSample } from './native';
 const COLUMNS = 8;
 const ROWS = 6;
 const COLOR_DELTA = 20;
@@ -8,6 +9,10 @@ const COOLDOWN_MS = 1500;
 const IMAGE_CACHE_BYTES = 24 * 1024 * 1024;
 
 export type ObservedFrame = { observation: Observation; screenshot: Screenshot };
+export type SendObservation =
+  | { kind: 'confirmed'; frame: ObservedFrame }
+  | { kind: 'pending'; reason: string }
+  | { kind: 'unavailable'; reason: string; allowInstant: boolean };
 
 export function compareFrames(previous: FrameSample, current: FrameSample) {
   if (previous.width !== current.width || previous.height !== current.height || previous.dpi !== current.dpi) {
@@ -56,6 +61,7 @@ type Session = {
 
 export class ObservationManager {
   private plan?: Plan;
+  private instantOnFailure = false;
   private session?: Session;
   private state: ObservationState = { phase: 'off', target: null, latest: null };
 
@@ -106,6 +112,33 @@ export class ObservationManager {
     return session.entries.at(-1) ?? null;
   }
 
+  async prepare(targetId: string, signal: AbortSignal): Promise<SendObservation> {
+    signal.throwIfAborted();
+    const session = this.session;
+    if (session?.plan.target.id === targetId) {
+      const timeout = new AbortController();
+      try {
+        const finished = await Promise.race([
+          this.poll(session).then(() => true),
+          delay(900, false, { signal: AbortSignal.any([signal, timeout.signal]) }),
+        ]);
+        signal.throwIfAborted();
+        if (this.session === session) {
+          const entry = session.entries.at(-1);
+          if (finished && this.state.phase === 'watching' && entry) return { kind: 'confirmed', frame: entry };
+          return { kind: 'pending', reason: '画面正在变化或观察尚未就绪。' };
+        }
+      } catch (error) {
+        signal.throwIfAborted();
+        throw error;
+      } finally { timeout.abort(); }
+    }
+    return {
+      kind: 'unavailable', reason: this.state.reason ?? '当前窗口没有有效的屏幕观察。',
+      allowInstant: this.state.target?.id === targetId && this.instantOnFailure,
+    };
+  }
+
   private setState(next: ObservationState) {
     const before = this.state;
     this.state = next;
@@ -123,13 +156,15 @@ export class ObservationManager {
     previous.worker.close();
   }
 
-  private finish(phase: ObservationState['phase'], target: Target | null, reason?: string) {
+  private finish(phase: ObservationState['phase'], target: Target | null, reason?: string, instantOnFailure = false) {
     this.stopSession();
+    this.instantOnFailure = instantOnFailure;
     this.setState({ phase, target, latest: null, reason });
   }
 
   private start(plan: Session['plan']) {
     this.stopSession();
+    this.instantOnFailure = false;
     const { target, denied } = plan;
     if (denied.some(executable => executable.toLowerCase() === target.executable.toLowerCase())) {
       this.finish('stopped', target, '该应用在禁止捕获名单中。');
@@ -179,21 +214,25 @@ export class ObservationManager {
           return;
         }
       }
-      const screenshot = await session.worker.jpeg();
+      const frameHash = hash(next);
+      const cached = session.entries.find(entry => entry.observation.frameHash === frameHash)?.screenshot;
+      const image = cached ?? await session.worker.jpeg();
       if (this.session !== session) return;
-      if (screenshot.target.id !== next.target.id) throw new Error('截图目标已变更。请重新选择窗口。');
+      if (!sameTarget(image.target, next.target)) throw new CaptureError('target_gone', '截图目标已变更。请重新选择窗口。');
+      const screenshot = { ...image, capturedAt, target: next.target };
       const observation: Observation = {
         observationId: randomUUID(), targetId: next.target.id, capturedAt,
-        frameHash: hash(next), changeScore: delta.score, changedRegions: delta.regions,
+        frameHash, changeScore: delta.score, changedRegions: delta.regions,
         screenshotReference: screenshot.id,
       };
       session.baseline = next;
       session.candidate = undefined;
       session.acceptedAt = now;
       session.entries.push({ observation, screenshot });
-      let bytes = session.entries.reduce((total, entry) => total + entry.screenshot.image.length, 0);
-      while (session.entries.length > 1 && (session.entries.length > maxObservations || bytes > IMAGE_CACHE_BYTES)) {
-        bytes -= session.entries.shift()!.screenshot.image.length;
+      const imageBytes = () => [...new Map(session.entries.map(({ screenshot: image }) =>
+        [image.id, image.image.length])).values()].reduce((total, size) => total + size, 0);
+      while (session.entries.length > 1 && (session.entries.length > maxObservations || imageBytes() > IMAGE_CACHE_BYTES)) {
+        session.entries.shift();
       }
       this.setState({ phase: 'watching', target: screenshot.target, latest: observation });
     } catch (error) {
@@ -202,6 +241,7 @@ export class ObservationManager {
   }
 
   private fail(target: Target, error: unknown) {
-    this.finish('stopped', target, error instanceof Error ? error.message : 'Windows 捕获失败。可尝试手动刷新截图。');
+    const transient = error instanceof CaptureError && ['timeout', 'worker_exit', 'no_frame', 'resized'].includes(error.code);
+    this.finish('stopped', target, error instanceof Error ? error.message : 'Windows 捕获失败。可尝试手动刷新截图。', transient);
   }
 }

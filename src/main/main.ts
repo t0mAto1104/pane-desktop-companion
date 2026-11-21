@@ -1,13 +1,13 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, session, Tray } from 'electron';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { awarenessOptions, type Actions, type CaptureState, type ObservationUse, type Settings, type Target } from '../shared';
+import { awarenessOptions, type Actions, type CaptureState, type ObservationUse, type SendResult, type Settings, type Target } from '../shared';
 import { Store } from './store';
-import { NativeBridge, UserError } from './native';
+import { NativeBridge, sameTarget, UserError } from './native';
 import { AI, diagnostic } from './ai';
 import { Chat } from './chat';
 import { ObservationManager } from './observation';
-import { ScreenContextEngine } from './screen-context';
+import { CaptureResolver, deniedTarget } from './capture-resolver';
 
 const accelerator = 'Control+Shift+Space';
 const rendererFile = join(__dirname, '../renderer/index.html');
@@ -21,8 +21,15 @@ let store: Store;
 let ai: AI;
 let chat: Chat;
 const observations = new ObservationManager((target, denied) => captureBridge.observe(target, denied), state => send('observation', state));
-const screenContext = new ScreenContextEngine();
-let startingChat = false;
+const resolver = new CaptureResolver({
+  observation: (target, signal) => observations.prepare(target.id, signal),
+  validate: (target, denied, signal) => captureBridge.validate(target, denied, signal),
+  capture: (target, denied, signal) => captureBridge.capture(target, denied, signal, 2800),
+});
+let pendingSend: { id: string; controller: AbortController } | undefined;
+let captureJob: AbortController | undefined;
+let locked = false;
+let suspended = false;
 let quitting = false;
 let ready = false;
 let settings: Settings;
@@ -42,19 +49,35 @@ function setCapture(next: Partial<CaptureState>) {
   send('capture', capture);
 }
 
+function desktopUnavailable() { return locked || suspended; }
+
+function invalidateSend(message: string) {
+  pendingSend?.controller.abort(new UserError(message));
+}
+
+function supersedeCapture() {
+  captureJob?.abort();
+  return ++invocation;
+}
+
 function cancelCapture(clearTarget = false) {
-  invocation += 1;
+  supersedeCapture();
   setCapture({ pending: false, shot: null, error: undefined, ...(clearTarget && !capture.bound ? { target: null } : {}) });
 }
 
 async function captureWindow(target: Target, generation: number) {
-  if (generation !== invocation) return;
-  setCapture({ pending: true, shot: null, error: undefined, target });
+  if (generation !== invocation || desktopUnavailable()) return;
+  const controller = new AbortController();
+  captureJob = controller;
+  const previous = capture.shot;
+  setCapture({ pending: true, shot: previous && sameTarget(previous.target, target) ? previous : null, error: undefined, target });
   try {
-    const shot = await captureBridge.capture(target, settings.denied);
+    const shot = await captureBridge.capture(target, settings.denied, controller.signal);
     if (generation === invocation) setCapture({ target: shot.target, shot, pending: false });
   } catch (error) {
-    if (generation === invocation) setCapture({ pending: false, shot: null, error: diagnostic(error) });
+    if (generation === invocation) setCapture({ pending: false, error: diagnostic(error) });
+  } finally {
+    if (captureJob === controller) captureJob = undefined;
   }
 }
 
@@ -78,17 +101,19 @@ function hide() {
 }
 
 async function onHotkey() {
-  if (!ready || credentialPrompt) return;
+  if (!ready || credentialPrompt || desktopUnavailable()) return;
   if (win.isVisible() && win.isFocused()) { hide(); return; }
   if (nativeLookupPending) return;
   nativeLookupPending = true;
-  const generation = ++invocation;
+  const generation = supersedeCapture();
   try {
     const target = capture.bound && capture.target ? capture.target : await captureBridge.foreground(settings.denied);
     if (generation !== invocation) return;
     setCapture({ target, pending: false, shot: null, error: undefined });
     show();
-    if (settings.autoCapture && !monitoring()) await captureWindow(target, generation);
+    if (settings.autoCapture && !monitoring() && !(capture.bound && settings.screenAwarenessEnabled)) {
+      await captureWindow(target, generation);
+    }
   } catch (error) {
     if (generation !== invocation) return;
     setCapture({ target: capture.bound ? capture.target : null, pending: false, shot: null, error: diagnostic(error) });
@@ -107,13 +132,13 @@ function saveSettings(next: Settings) {
   settings = next;
   store.write('settings', settings);
   applySettings();
-  observations.configure(boundTarget(), settings, settings.denied);
+  if (!desktopUnavailable()) observations.configure(boundTarget(), settings, settings.denied);
   return settings;
 }
 
 function selectedShot(id: string | null) {
   if (id === null) return null;
-  if (capture.shot?.id !== id || capture.pending) throw new UserError('截图已更新或清除，请重新选择要发送的截图。');
+  if (capture.shot?.id !== id) throw new UserError('截图已更新或清除，请重新选择要发送的截图。');
   return capture.shot;
 }
 
@@ -125,39 +150,38 @@ function denyList(input: unknown) {
 }
 
 function assertIdle() {
-  if (chat.run || startingChat) throw new UserError('请先等待或停止当前回答。');
+  if (chat.run || pendingSend) throw new UserError('请先等待或停止当前回答。');
 }
 
-async function beginChat(id: string, text: string, shotId: string | null, retry: boolean, use: ObservationUse = 'omit') {
+async function beginChat(id: string, text: string, shotId: string | null, retry: boolean, use: ObservationUse = 'omit'): Promise<SendResult> {
   assertIdle();
   if (id !== activeId) throw new UserError('请先打开此对话。');
   if (typeof text !== 'string' || text.length > 20_000) throw new UserError('每条消息最多 20,000 个字符。');
   if (use !== 'auto' && use !== 'omit' && use !== 'image') throw new UserError('屏幕上下文选项无效。');
-  const selected = selectedShot(shotId);
-  const target = boundTarget();
-  const awareness = settings.screenAwarenessEnabled && !!target;
-  const question = retry ? store.lastTurn(id)[0]?.text : text.trim();
-  startingChat = true;
+  const selected = use === 'image' ? null : selectedShot(shotId);
+  const bound = boundTarget();
+  const request = { id, controller: new AbortController() };
+  pendingSend = request;
+  const { signal } = request.controller;
   try {
-    const observation = target && awareness && use !== 'omit' && question
-      ? await observations.fresh(target.id) : null;
-    if (quitting || activeId !== id || !store.has(id)) throw new UserError('对话已切换，请重新发送。');
-    // Re-read the state after native I/O. Pausing, rebinding or changing the denylist clears the old cache.
-    const valid = observation && boundTarget()?.id === observation.observation.targetId &&
-      observations.current.latest?.observationId === observation.observation.observationId && observations.current.phase === 'watching';
-    if (use === 'image' && !valid) throw new UserError('当前没有可用的观察截图。请等待画面稳定或改为仅发送文字。');
-    const context = valid ? screenContext.select(id, observation, use === 'image') : undefined;
-    const automatic = awareness && use !== 'omit' && !!question;
-    const shot = !automatic && selected && capture.shot?.id === selected.id ? selected : null;
-    const run = chat.start(id, text.trim(), shot, settings, retry, {
-      screen: context,
-      includeHistoryImages: !awareness,
-      onComplete: context ? () => screenContext.complete(id, context) : undefined,
+    const visual = await resolver.resolve({
+      use, manual: selected, retry: retry ? chat.retryVisual(id) : null,
+      target: bound ?? capture.target, awareness: !!bound && settings.screenAwarenessEnabled,
+      paused: observations.current.phase === 'paused', desktopUnavailable: desktopUnavailable(), denied: settings.denied, signal,
     });
-    if (selected && capture.shot?.id === selected.id) cancelCapture();
-    return run;
+    signal.throwIfAborted();
+    if (quitting || activeId !== id || !store.has(id)) throw new UserError('对话已切换，请重新发送。');
+    if (visual.source === 'unavailable') return { kind: 'confirm-text', reason: visual.reason };
+    if (visual.source === 'manual' && selected && capture.shot?.id !== selected.id) {
+      throw new UserError('手动附件已更新，请确认当前截图后重新发送。');
+    }
+    const run = chat.start(id, text.trim(), visual, settings, retry);
+    // Clear only the exact attachment that was used, without cancelling a newer capture.
+    if (visual.source === 'manual' && capture.shot?.id === visual.shot.id) setCapture({ shot: null, error: undefined });
+    else if (visual.source === 'text' && use === 'omit' && capture.error) setCapture({ error: undefined });
+    return { kind: 'started', run };
   } finally {
-    startingChat = false;
+    if (pendingSend === request) pendingSend = undefined;
   }
 }
 
@@ -173,11 +197,17 @@ const actions: Actions = {
       assertIdle();
       next.provider = patch.provider;
     }
+    if (next.screenAwarenessEnabled !== settings.screenAwarenessEnabled || next.monitoringIntervalMs !== settings.monitoringIntervalMs ||
+        next.changeThreshold !== settings.changeThreshold || next.maxObservations !== settings.maxObservations) {
+      invalidateSend('屏幕观察设置已变更，请重新发送。');
+    }
     if (patch.denied !== undefined) {
       next.denied = denyList(patch.denied);
-      invocation += 1;
+      invalidateSend('禁止捕获名单已变更，请重新发送。');
+      supersedeCapture();
       chat.enforceDenyList(next.denied);
-      setCapture({ pending: false, shot: null, error: undefined,
+      setCapture({ pending: false, error: undefined,
+        shot: capture.shot && !deniedTarget(capture.shot.target, next.denied) ? capture.shot : null,
         ...(!next.screenAwarenessEnabled ? { target: null, bound: false } : {}) });
     }
     return saveSettings(next);
@@ -185,13 +215,15 @@ const actions: Actions = {
   'window:hide': hide,
   'window:list': () => captureBridge.list(settings.denied),
   'capture:bind': async id => {
+    if (desktopUnavailable()) throw new UserError('请先解锁 Windows 桌面。');
+    invalidateSend('目标窗口已切换，请重新发送。');
     if (id === null) {
-      invocation += 1;
+      supersedeCapture();
       setCapture({ target: null, bound: false, pending: false, shot: null, error: undefined });
       observations.configure(null, settings, settings.denied);
       return;
     }
-    const generation = ++invocation;
+    const generation = supersedeCapture();
     setCapture({ target: null, bound: false, pending: false, shot: null, error: undefined });
     observations.configure(null, settings, settings.denied);
     const target = (await captureBridge.list(settings.denied)).find(item => item.id === id);
@@ -202,13 +234,24 @@ const actions: Actions = {
     if (!settings.screenAwarenessEnabled) await captureWindow(target, generation);
   },
   'capture:refresh': async () => {
+    if (desktopUnavailable()) throw new UserError('请先解锁 Windows 桌面。');
+    invalidateSend('截图正在刷新，请确认后重新发送。');
     const target = capture.target;
     if (!target) throw new UserError('请先绑定窗口，或切换到目标应用后按快捷键。');
-    await captureWindow(target, ++invocation);
+    await captureWindow(target, supersedeCapture());
   },
-  'capture:remove': () => cancelCapture(),
-  'observation:pause': () => observations.pause(),
-  'observation:resume': () => observations.resume(),
+  'capture:remove': () => { invalidateSend('截图已移除，请重新发送。'); cancelCapture(); },
+  'observation:pause': () => {
+    invalidateSend('屏幕观察已暂停，请重新发送。');
+    supersedeCapture();
+    if (capture.pending) setCapture({ pending: false });
+    observations.pause();
+  },
+  'observation:resume': () => {
+    if (desktopUnavailable()) throw new UserError('请先解锁 Windows 桌面。');
+    observations.configure(boundTarget(), settings, settings.denied);
+    observations.resume();
+  },
   'observation:preview': id => {
     if (typeof id !== 'string') throw new UserError('无效的观察标识。');
     return observations.preview(id);
@@ -246,25 +289,27 @@ const actions: Actions = {
   'chat:list': () => store.list(),
   'chat:open': id => {
     if (!store.has(id)) throw new UserError('该对话已删除。');
+    if (activeId !== id) invalidateSend('对话已切换，请重新发送。');
     activeId = id;
     store.write('active', id);
     return store.messages(id);
   },
   'chat:new': () => {
+    invalidateSend('对话已切换，请重新发送。');
     const item = store.create();
     activeId = item.id;
     return item;
   },
   'chat:delete': id => {
     if (chat.run?.conversationId === id) throw new UserError('请先停止此对话的生成。');
+    if (pendingSend?.id === id) invalidateSend('该对话已删除。');
     store.remove(id);
     chat.deleteImages(id);
-    screenContext.forget(id);
     if (activeId === id) activeId = null;
   },
   'chat:send': (id, text, shotId, use) => beginChat(id, text, shotId, false, use),
   'chat:retry': (id, shotId, use) => beginChat(id, '', shotId, true, use),
-  'chat:stop': () => chat.stop(),
+  'chat:stop': () => { invalidateSend('已停止准备本轮请求。'); chat.stop(); },
 };
 
 function launch() {
@@ -297,8 +342,16 @@ function launch() {
   ai = new AI(store, dataDir, () => send('account'));
   chat = new Chat(store, ai, update => send('chat', update));
   observations.configure(null, settings, settings.denied);
-  powerMonitor.on('lock-screen', () => { observations.pause(); cancelCapture(true); });
-  powerMonitor.on('suspend', () => { observations.pause(); cancelCapture(true); });
+  const pauseDesktop = () => {
+    invalidateSend('Windows 桌面不可用，本轮发送已停止。');
+    chat.stop();
+    observations.pause();
+    cancelCapture(true);
+  };
+  powerMonitor.on('lock-screen', () => { locked = true; pauseDesktop(); });
+  powerMonitor.on('unlock-screen', () => { locked = false; });
+  powerMonitor.on('suspend', () => { suspended = true; pauseDesktop(); });
+  powerMonitor.on('resume', () => { suspended = false; });
   ipcMain.handle('pane:call', async (event, action: keyof Actions, args: unknown[]) => {
     const frame = event.senderFrame;
     if (!frame || frame !== win.webContents.mainFrame || frame.url !== expectedURL || !Object.hasOwn(actions, action) || !Array.isArray(args)) return { ok: false, error: '此操作不可用。' };
@@ -334,7 +387,7 @@ app.setAppUserModelId('local.pane.desktop-companion');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', show);
-  app.on('before-quit', () => { quitting = true; observations.dispose(); chat?.stop(); ai?.cancelSignIn(); });
+  app.on('before-quit', () => { quitting = true; invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
   app.on('will-quit', () => { globalShortcut.unregisterAll(); store?.close(); });
   app.whenReady().then(launch).catch(() => app.exit(1));
 }
