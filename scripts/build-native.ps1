@@ -24,5 +24,5 @@ $env:INCLUDE = (@((Join-Path $vc 'include')) + @('ucrt','shared','um','winrt','c
 $env:LIB = (@((Join-Path $vc 'lib\x64')) + @('ucrt','um' | ForEach-Object { Join-Path $sdkLib "$_\x64" })) -join ';'
 $bin = Join-Path $root 'native\bin'
 New-Item -ItemType Directory -Force $bin | Out-Null
-& (Join-Path $vc 'bin\Hostx64\x64\cl.exe') /nologo /std:c++20 /EHsc /W4 /O2 /MT /DUNICODE /D_UNICODE /utf-8 "/Fo$bin\window-capture.obj" "/Fe$bin\window-capture.exe" (Join-Path $root 'native\window-capture.cpp') /link user32.lib dwmapi.lib d3d11.lib dxgi.lib windowscodecs.lib ole32.lib windowsapp.lib gdi32.lib
+& (Join-Path $vc 'bin\Hostx64\x64\cl.exe') /nologo /std:c++20 /EHsc /W4 /O2 /MT /DUNICODE /D_UNICODE /utf-8 "/Fo$bin\\" "/Fe$bin\window-capture.exe" (Join-Path $root 'native\window-capture.cpp') (Join-Path $root 'native\ui-automation.cpp') /link user32.lib dwmapi.lib d3d11.lib dxgi.lib windowscodecs.lib ole32.lib oleaut32.lib windowsapp.lib gdi32.lib
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

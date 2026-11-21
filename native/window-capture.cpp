@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include "ui-automation.h"
 #include <dwmapi.h>
 #include <d3d11.h>
 #include <wincodec.h>
@@ -138,15 +139,21 @@ void printJson(const std::wstring& data) {
     std::cout << utf8 << '\n';
 }
 
-std::vector<uint8_t> encodeJpeg(UINT width, UINT height, UINT stride, BYTE* pixels, UINT bytes) {
+std::vector<uint8_t> encodeJpeg(UINT width, UINT height, UINT stride, BYTE* pixels, UINT bytes, std::optional<WICRect> crop = {}) {
     com_ptr<IWICImagingFactory> factory;
     check_hresult(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.put())));
     com_ptr<IWICBitmap> bitmap;
     check_hresult(factory->CreateBitmapFromMemory(width, height, GUID_WICPixelFormat32bppBGRA, stride, bytes, pixels, bitmap.put()));
 
     com_ptr<IWICBitmapSource> source = bitmap.as<IWICBitmapSource>();
+    if (crop) {
+        com_ptr<IWICBitmapClipper> clipper;
+        check_hresult(factory->CreateBitmapClipper(clipper.put()));
+        check_hresult(clipper->Initialize(source.get(), &*crop));
+        source = clipper.as<IWICBitmapSource>();
+    }
     const auto longest = std::max(width, height);
-    if (longest > 2048) {
+    if (!crop && longest > 2048) {
         com_ptr<IWICBitmapScaler> scaler;
         check_hresult(factory->CreateBitmapScaler(scaler.put()));
         check_hresult(scaler->Initialize(source.get(), std::max(1u, width * 2048 / longest),
@@ -292,9 +299,9 @@ public:
     UINT width() const { return static_cast<UINT>(poolSize.Width); }
     UINT height() const { return static_cast<UINT>(poolSize.Height); }
 
-    std::vector<uint8_t> jpeg() {
+    std::vector<uint8_t> jpeg(std::optional<WICRect> crop = {}) {
         return readPixels([&](BYTE* data, UINT stride) {
-            return encodeJpeg(width(), height(), stride, data, stride * height());
+            return encodeJpeg(width(), height(), stride, data, stride * height(), crop);
         });
     }
 
@@ -379,6 +386,24 @@ WindowInfo verifyWindow(HWND hwnd, const std::wstring& id, DWORD assistant, cons
     DWORD affinity = 0;
     if (GetWindowDisplayAffinity(hwnd, &affinity) && affinity != WDA_NONE) throw Failure("protected");
     return std::move(*current);
+}
+
+RECT physicalBounds(HWND hwnd) {
+    RECT bounds{};
+    if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))) ||
+        bounds.right <= bounds.left || bounds.bottom <= bounds.top) {
+        if (!GetWindowRect(hwnd, &bounds) || bounds.right <= bounds.left || bounds.bottom <= bounds.top)
+            throw Failure("target_gone");
+    }
+    return bounds;
+}
+
+std::wstring geometryJson(HWND hwnd, const RECT& bounds) {
+    return L"{\"bounds\":{\"x\":" + std::to_wstring(bounds.left) + L",\"y\":" + std::to_wstring(bounds.top) +
+        L",\"width\":" + std::to_wstring(bounds.right - bounds.left) +
+        L",\"height\":" + std::to_wstring(bounds.bottom - bounds.top) +
+        L"},\"dpi\":" + std::to_wstring(GetDpiForWindow(hwnd)) +
+        L",\"foreground\":" + (GetAncestor(GetForegroundWindow(), GA_ROOT) == hwnd ? L"true" : L"false") + L"}";
 }
 
 void writeBytes(const std::vector<uint8_t>& bytes) {
@@ -505,7 +530,7 @@ int wmain(int argc, wchar_t** argv) {
         if (argc < 3) throw Failure("invalid_request");
         const std::wstring command = argv[1];
         const auto assistant = std::stoul(argv[2]);
-        const bool targetCommand = command == L"capture" || command == L"observe" || command == L"verify";
+        const bool targetCommand = command == L"capture" || command == L"observe" || command == L"verify" || command == L"uia" || command == L"geometry" || command == L"roi";
         if (targetCommand && argc < 4) throw Failure("invalid_request");
         int firstDenied = targetCommand ? 4 : 3;
         std::wstring expectedExecutable;
@@ -513,6 +538,20 @@ int wmain(int argc, wchar_t** argv) {
             if (argc <= firstDenied + 1) throw Failure("invalid_request");
             expectedExecutable = argv[firstDenied + 1];
             firstDenied += 2;
+        }
+        int region[4]{};
+        if (command == L"roi") {
+            constexpr int scale = 1'000'000;
+            if (argc - firstDenied < 4) throw Failure("roi_invalid");
+            for (int& part : region) {
+                const std::wstring number = argv[firstDenied++];
+                if (number.empty() || number.size() > 7 || number.find_first_not_of(L"0123456789") != std::wstring::npos)
+                    throw Failure("roi_invalid");
+                part = std::stoi(number);
+                if (part > scale) throw Failure("roi_invalid");
+            }
+            if (region[2] < 1 || region[3] < 1 || region[0] + region[2] > scale || region[1] + region[3] > scale)
+                throw Failure("roi_invalid");
         }
         std::vector<std::wstring> denied;
         for (int index = firstDenied; index < argc; ++index) denied.emplace_back(argv[index]);
@@ -543,7 +582,47 @@ int wmain(int argc, wchar_t** argv) {
                 printJson(json(current));
                 return 0;
             }
+            if (command == L"geometry") {
+                printJson(geometryJson(hwnd, physicalBounds(hwnd)));
+                return 0;
+            }
             init_apartment(apartment_type::multi_threaded);
+            if (command == L"uia") {
+                const RECT before = physicalBounds(hwnd);
+                const auto dpi = GetDpiForWindow(hwnd);
+                const auto tree = inspectAutomation(hwnd, current.pid);
+                verifyWindow(hwnd, id, assistant, denied, current.executable);
+                const auto after = physicalBounds(hwnd);
+                if (!EqualRect(&before, &after) || dpi != GetDpiForWindow(hwnd)) throw Failure("resized");
+                printJson(L"{\"geometry\":" + geometryJson(hwnd, after) + L",\"tree\":" + tree + L"}");
+                return 0;
+            }
+            if (command == L"roi") {
+                constexpr int64_t scale = 1'000'000;
+                const RECT before = physicalBounds(hwnd);
+                const auto dpi = GetDpiForWindow(hwnd);
+                WindowCapture capture(hwnd);
+                capture.readLatest();
+                const auto width = capture.width(), height = capture.height();
+                const auto floorAt = [&](UINT size, int unit) { return static_cast<INT>(size * static_cast<int64_t>(unit) / scale); };
+                const auto ceilAt = [&](UINT size, int unit) {
+                    return static_cast<INT>((size * static_cast<int64_t>(unit) + scale - 1) / scale);
+                };
+                const int left = floorAt(width, region[0]), top = floorAt(height, region[1]);
+                const WICRect rect{left, top, ceilAt(width, region[0] + region[2]) - left,
+                    ceilAt(height, region[1] + region[3]) - top};
+                if (static_cast<int64_t>(rect.Width) * rect.Height > 12'000'000) throw Failure("roi_too_large");
+                const auto jpeg = capture.jpeg(rect);
+                const auto after = verifyWindow(hwnd, id, assistant, denied, current.executable);
+                const auto bounds = physicalBounds(hwnd);
+                if (!EqualRect(&before, &bounds) || dpi != GetDpiForWindow(hwnd)) throw Failure("resized");
+                printJson(L"{\"target\":" + json(after) + L",\"geometry\":" + geometryJson(hwnd, bounds) +
+                    L",\"frameSize\":{\"width\":" + std::to_wstring(width) + L",\"height\":" + std::to_wstring(height) +
+                    L"},\"pixels\":{\"x\":" + std::to_wstring(rect.X) + L",\"y\":" + std::to_wstring(rect.Y) +
+                    L",\"width\":" + std::to_wstring(rect.Width) + L",\"height\":" + std::to_wstring(rect.Height) + L"}}");
+                writeBytes(jpeg);
+                return 0;
+            }
             if (command == L"observe") {
                 observe(hwnd, id, assistant, denied, current.executable);
             } else {

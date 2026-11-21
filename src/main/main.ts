@@ -1,11 +1,17 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, session, Tray } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, session, Tray } from 'electron';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { awarenessOptions, type Actions, type CaptureState, type ObservationUse, type SendResult, type Settings, type Target } from '../shared';
+import { awarenessOptions, type Actions, type CaptureState, type ObservationUse, type ScreenRegion, type SendResult, type Settings, type Target } from '../shared';
 import { Store } from './store';
 import { NativeBridge, sameTarget, UserError } from './native';
 import { AI, diagnostic } from './ai';
 import { Chat } from './chat';
+import { queryDesktop } from './desktop-query';
+import { LocationEngine, type ToolScope } from './location';
+import { GuidanceEngine } from './guidance';
+import { OverlayManager } from './overlay-manager';
+import { regionUnits } from './roi';
+import { ElementDetector, matchElements } from './element-detector';
 import { ObservationManager } from './observation';
 import { CaptureResolver, deniedTarget } from './capture-resolver';
 
@@ -14,6 +20,8 @@ const rendererFile = join(__dirname, '../renderer/index.html');
 const expectedURL = pathToFileURL(rendererFile).href;
 const executable = app.isPackaged ? join(process.resourcesPath, 'native/window-capture.exe') : join(__dirname, '../../native/bin/window-capture.exe');
 const captureBridge = new NativeBridge(executable);
+const detector = new ElementDetector((target, denied, signal) => captureBridge.inspectAutomation(target, denied, signal));
+let toolScope = new AbortController();
 
 let win: BrowserWindow;
 let tray: Tray;
@@ -26,6 +34,16 @@ const resolver = new CaptureResolver({
   validate: (target, denied, signal) => captureBridge.validate(target, denied, signal),
   capture: (target, denied, signal) => captureBridge.capture(target, denied, signal, 2800),
 });
+const overlay = new OverlayManager();
+const location = new LocationEngine(detector, readEvidence,
+  (instructions, data, image, signal) => queryDesktop(ai, settings, instructions, data, image, signal),
+  async (id, scope) => {
+    const checked = await observations.prepare(scope.target.id, scope.signal);
+    return checked.kind === 'confirmed' && checked.frame.observation.observationId === id;
+  });
+const guidance = new GuidanceEngine(detector, readEvidence,
+  (instructions, data, image, signal) => queryDesktop(ai, settings, instructions, data, image, signal),
+  state => send('guidance', state));
 let pendingSend: { id: string; controller: AbortController } | undefined;
 let captureJob: AbortController | undefined;
 let locked = false;
@@ -58,6 +76,32 @@ function invalidateSend(message: string) {
 function supersedeCapture() {
   captureJob?.abort();
   return ++invocation;
+}
+
+function cancelTools() {
+  guidance.clear();
+  overlay.clear();
+  location.clear();
+  toolScope.abort(new UserError('目标窗口或权限已变更，请重试。'));
+  toolScope = new AbortController();
+}
+
+function authorizedWindow() {
+  if (desktopUnavailable()) throw new UserError('请先解锁 Windows 桌面。');
+  const target = boundTarget();
+  if (!target) throw new UserError('请先明确绑定一个窗口。');
+  if (deniedTarget(target, settings.denied)) throw new UserError('该应用在禁止捕获名单中。');
+  return { target, denied: settings.denied, signal: toolScope.signal };
+}
+
+async function readEvidence(scope: ToolScope, region: ScreenRegion) {
+  const prior = observations.current;
+  const capture = await captureBridge.captureRegion(scope.target, scope.denied, region, regionUnits(region), scope.signal);
+  scope.signal.throwIfAborted();
+  const current = observations.current;
+  const observationId = prior.phase === 'watching' && prior.latest?.targetId === scope.target.id && current.phase === 'watching' &&
+    current.latest?.observationId === prior.latest.observationId ? prior.latest.observationId : undefined;
+  return { capture, observationId };
 }
 
 function cancelCapture(clearTarget = false) {
@@ -203,6 +247,7 @@ const actions: Actions = {
     }
     if (patch.denied !== undefined) {
       next.denied = denyList(patch.denied);
+      cancelTools();
       invalidateSend('禁止捕获名单已变更，请重新发送。');
       supersedeCapture();
       chat.enforceDenyList(next.denied);
@@ -216,6 +261,7 @@ const actions: Actions = {
   'window:list': () => captureBridge.list(settings.denied),
   'capture:bind': async id => {
     if (desktopUnavailable()) throw new UserError('请先解锁 Windows 桌面。');
+    cancelTools();
     invalidateSend('目标窗口已切换，请重新发送。');
     if (id === null) {
       supersedeCapture();
@@ -255,6 +301,70 @@ const actions: Actions = {
   'observation:preview': id => {
     if (typeof id !== 'string') throw new UserError('无效的观察标识。');
     return observations.preview(id);
+  },
+  'guidance:state': () => guidance.state,
+  'guidance:start': async (task, includeImage, region) => {
+    assertIdle();
+    overlay.clear();
+    location.clear();
+    return guidance.start(authorizedWindow(), task, includeImage, region);
+  },
+  'guidance:check': () => guidance.check(authorizedWindow()),
+  'guidance:confirm': skip => guidance.confirm(authorizedWindow(), skip === true),
+  'guidance:next': () => {
+    overlay.clear();
+    location.clear();
+    return guidance.next(authorizedWindow());
+  },
+  'guidance:pause': pause => {
+    if (typeof pause !== 'boolean') throw new UserError('无效的教学状态。');
+    overlay.clear();
+    location.clear();
+    return guidance.pause(authorizedWindow(), pause);
+  },
+  'guidance:exit': () => cancelTools(),
+  'ui:clear': () => cancelTools(),
+  'ui:highlight': (ids, style) => {
+    const scope = authorizedWindow();
+    if (!Array.isArray(ids) || !ids.length || ids.length > 6 || ids.some(id => typeof id !== 'string') ||
+        !['outline', 'shade', 'arrow', 'number', 'label', 'sequence'].includes(style) || !location.eligible(ids, scope.target)) {
+      throw new UserError('高亮目标已失效，或无法安全映射图像坐标。请重新定位。');
+    }
+    overlay.show(style, async signal => {
+      const token = AbortSignal.any([scope.signal, signal]);
+      const geometry = await captureBridge.geometry(scope.target, scope.denied, token);
+      const markers = await location.resolve(ids, { ...scope, signal: token }, geometry);
+      return markers ? { geometry, markers } : null;
+    });
+  },
+  'ui:locate': async (query, allowVision, region) => {
+    overlay.clear();
+    if (typeof allowVision !== 'boolean') throw new UserError('无效的图像权限选项。');
+    return location.locate(authorizedWindow(), query, allowVision, region);
+  },
+  'ui:roi': async region => {
+    const { target, denied, signal } = authorizedWindow();
+    return captureBridge.captureRegion(target, denied, region, regionUnits(region), signal);
+  },
+  'ui:changeRoi': async index => {
+    const { target, denied, signal } = authorizedWindow();
+    const state = observations.current;
+    const region = Number.isSafeInteger(index) && state.phase === 'watching' && state.latest?.targetId === target.id
+      ? state.latest.changedRegions[index] : undefined;
+    if (!region) throw new UserError('当前没有可用的变化区域。');
+    return captureBridge.captureRegion(target, denied, region, regionUnits(region), signal);
+  },
+  'ui:inspect': async () => {
+    const { target, denied, signal } = authorizedWindow();
+    return detector.inspect(target, denied, signal);
+  },
+  'ui:findElement': async query => {
+    const { target, denied, signal } = authorizedWindow();
+    return matchElements(await detector.inspect(target, denied, signal), query);
+  },
+  'ui:getElement': async id => {
+    const { target, denied, signal } = authorizedWindow();
+    return detector.get(target, denied, id, signal);
   },
   'account:state': () => ai.account(),
   'account:signIn': () => { assertIdle(); return ai.signIn(); },
@@ -339,10 +449,15 @@ function launch() {
     if (!quitting) { event.preventDefault(); hide(); }
   });
   win.on('minimize', hide);
+  win.on('focus', () => overlay.hide());
+  screen.on('display-metrics-changed', () => overlay.hide());
+  screen.on('display-added', () => overlay.hide());
+  screen.on('display-removed', () => overlay.hide());
   ai = new AI(store, dataDir, () => send('account'));
   chat = new Chat(store, ai, update => send('chat', update));
   observations.configure(null, settings, settings.denied);
   const pauseDesktop = () => {
+    cancelTools();
     invalidateSend('Windows 桌面不可用，本轮发送已停止。');
     chat.stop();
     observations.pause();
@@ -387,7 +502,7 @@ app.setAppUserModelId('local.pane.desktop-companion');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', show);
-  app.on('before-quit', () => { quitting = true; invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
+  app.on('before-quit', () => { quitting = true; cancelTools(); invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
   app.on('will-quit', () => { globalShortcut.unregisterAll(); store?.close(); });
   app.whenReady().then(launch).catch(() => app.exit(1));
 }

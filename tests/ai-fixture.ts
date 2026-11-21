@@ -23,6 +23,28 @@ export class AI {
     assert.equal(model, 'fixture-vision');
     const file = process.env.PANE_TEST_REQUEST_LOG;
     if (file) appendFileSync(file, 'stream\n');
+    const directive = input[0]?.content;
+    if (typeof directive === 'string' && directive.includes('requestedControl')) assert.fail('User data must not be placed in a developer directive');
+    if (typeof directive === 'string' && directive.includes('Coordinates are normalized')) {
+      const current = input.at(-1)?.content;
+      assert.ok(Array.isArray(current) && current.some(item => item.type === 'input_image' &&
+        item.image_url.startsWith('data:image/jpeg;base64,/9j/')));
+      return JSON.stringify({ answer: '这是模拟界面中画布绘制的候选位置。',
+        candidates: [{ label: '画布候选控件', region: { x: .55, y: .48, width: .25, height: .18 } }] });
+    }
+    if (typeof directive === 'string' && directive.includes('Generate read-only user-operated teaching steps')) {
+      const current = input.at(-1)?.content;
+      assert.equal(typeof current, 'string', 'image permission is off in the guided scenario');
+      assert.match(String(current), /买入开仓/);
+      assert.ok(!String(current).includes('PRIVATE_FIXTURE_VALUE'));
+      return JSON.stringify({ title: '模拟交易教学', steps: [
+        { title: '识别模拟开仓入口', explanation: '先核对模拟账户。你可以亲自打开模拟确认页。',
+          targetElement: { name: '买入开仓' }, expectedState: '出现模拟确认页',
+          verificationMethod: 'uia-visible', verifyElement: { name: '模拟确认页' } },
+        { title: '核对模拟状态', explanation: '查看模拟确认页和当前仓位提示。', expectedState: '用户核对模拟结果',
+          verificationMethod: 'manual' },
+      ] });
+    }
     const current = input.at(-1)?.content;
     const question = Array.isArray(current) ? current.find(part => part.type === 'input_text')?.text : current;
     if (question?.startsWith('观察验收：')) {

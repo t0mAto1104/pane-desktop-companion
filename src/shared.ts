@@ -1,4 +1,4 @@
-export type Events = { capture: CaptureState; observation: ObservationState; chat: Update; account: undefined; shown: undefined };
+export type Events = { capture: CaptureState; observation: ObservationState; chat: Update; guidance: GuidanceState | null; account: undefined; shown: undefined };
 export type Theme = 'system' | 'light' | 'dark';
 export type Provider = 'chatgpt' | 'api-key';
 export type AwarenessOptions = {
@@ -30,6 +30,38 @@ export type Screenshot = { id: string; target: Target; image: string; capturedAt
 export type CaptureState = { target: Target | null; bound: boolean; pending: boolean; shot: Screenshot | null; error?: string };
 export type ObservationUse = 'auto' | 'omit' | 'image';
 export type ScreenRegion = { x: number; y: number; width: number; height: number };
+export type PixelRect = ScreenRegion;
+export type WindowGeometry = { bounds: PixelRect; dpi: number; foreground: boolean };
+export type RegionCapture = Screenshot & {
+  region: ScreenRegion; pixels: PixelRect; frameSize: { width: number; height: number }; geometry: WindowGeometry;
+};
+export type UiElement = {
+  elementId: string; name: string; automationId: string; controlType: number; role: string;
+  boundingRectangle: PixelRect; isEnabled: boolean; isOffscreen: boolean;
+  processId: number; parentId: string | null; childrenIds: string[];
+};
+export type UiInspection = {
+  status: 'ready' | 'unavailable'; target: Target; geometry: WindowGeometry;
+  elements: UiElement[]; truncated: boolean; reason?: string;
+};
+export type ElementQuery = { name?: string; automationId?: string; role?: string };
+export type UiMatch = { status: 'matched' | 'candidates' | 'missing'; candidates: UiElement[] };
+export type LocatedCandidate = {
+  id: string; name: string; source: 'uia' | 'vision'; canHighlight: boolean;
+  elementId?: string; role?: string; enabled?: boolean; region?: ScreenRegion;
+};
+export type LocationResult = {
+  status: 'verified' | 'ambiguous' | 'visual' | 'unavailable'; candidates: LocatedCandidate[];
+  image?: RegionCapture; answer?: string; reason?: string;
+};
+export type HighlightStyle = 'outline' | 'shade' | 'arrow' | 'number' | 'label' | 'sequence';
+export type GuidanceStep = {
+  stepId: string; title: string; explanation: string; targetElement: ElementQuery | null;
+  expectedState: string; verificationMethod: 'manual' | 'uia-visible'; verifyElement: ElementQuery | null;
+  status: 'pending' | 'active' | 'completed' | 'blocked' | 'skipped';
+  verification?: 'manual' | 'uia'; reason?: string;
+};
+export type GuidanceState = { title: string; index: number; mode: 'active' | 'paused' | 'done'; steps: GuidanceStep[] };
 export type Observation = {
   observationId: string;
   targetId: string;
@@ -70,6 +102,21 @@ export interface Actions {
   'observation:pause'(): void;
   'observation:resume'(): void;
   'observation:preview'(id: string): Screenshot | null;
+  'guidance:state'(): GuidanceState | null;
+  'guidance:start'(task: string, includeImage: boolean, region?: ScreenRegion): Promise<GuidanceState | null>;
+  'guidance:check'(): Promise<GuidanceState | null>;
+  'guidance:confirm'(skip?: boolean): GuidanceState | null;
+  'guidance:next'(): Promise<GuidanceState | null>;
+  'guidance:pause'(pause: boolean): Promise<GuidanceState | null>;
+  'guidance:exit'(): void;
+  'ui:highlight'(ids: string[], style: HighlightStyle): void;
+  'ui:clear'(): void;
+  'ui:locate'(query: ElementQuery, allowVision: boolean, region?: ScreenRegion): Promise<LocationResult>;
+  'ui:roi'(region: ScreenRegion): Promise<RegionCapture>;
+  'ui:changeRoi'(index: number): Promise<RegionCapture>;
+  'ui:inspect'(): Promise<UiInspection>;
+  'ui:findElement'(query: ElementQuery): Promise<UiMatch>;
+  'ui:getElement'(id: string): Promise<{ element: UiElement; geometry: WindowGeometry } | null>;
   'account:state'(): Promise<Account>;
   'account:signIn'(): Promise<Account>;
   'account:cancel'(): void;

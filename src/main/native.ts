@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import type { Screenshot, Target } from '../shared';
+import type { RegionCapture, ScreenRegion, Screenshot, Target, UiElement, WindowGeometry } from '../shared';
 
 export class UserError extends Error {}
 
@@ -18,6 +18,8 @@ function windowArgs(target: Target, denied: string[]) {
 
 const messages: Record<string, string> = {
   desktop_locked: 'Windows 桌面已锁定或不可访问。解锁后可恢复屏幕观察。',
+  roi_invalid: '局部截图超出目标窗口。',
+  roi_too_large: '局部截图超过 1200 万像素。请选择较小区域。',
   no_target: '没有可捕获的前台窗口。请先切换到目标窗口，或在窗口列表中选择。',
   target_gone: '目标窗口已关闭或不可用。请重新选择窗口。',
   process_unavailable: '无法验证目标应用的身份。请切换到可访问的普通窗口。',
@@ -66,6 +68,16 @@ export class NativeBridge {
     if (!sameTarget(verified, target)) throw new CaptureError('target_gone', messages.target_gone);
   }
 
+  async geometry(target: Target, denied: string[], signal?: AbortSignal): Promise<WindowGeometry> {
+    return JSON.parse((await this.run('geometry', windowArgs(target, denied), 900, signal)).toString());
+  }
+
+  async inspectAutomation(target: Target, denied: string[], signal: AbortSignal): Promise<{
+    geometry: WindowGeometry; tree: { elements: Array<Omit<UiElement, 'role'>>; truncated: boolean };
+  }> {
+    return JSON.parse((await this.run('uia', windowArgs(target, denied), 1900, signal)).toString());
+  }
+
   async capture(target: Target, denied: string[], signal?: AbortSignal, timeout = 5000): Promise<Screenshot> {
     const capturedAt = Date.now();
     const result = await this.run('capture', windowArgs(target, denied), timeout, signal);
@@ -75,6 +87,19 @@ export class NativeBridge {
     const verified: Target = JSON.parse(result.subarray(0, separator).toString());
     if (!sameTarget(verified, target)) throw new CaptureError('target_gone', messages.target_gone);
     return { id: randomUUID(), target: verified, image: 'data:image/jpeg;base64,' + jpeg.toString('base64'), capturedAt };
+  }
+
+  async captureRegion(target: Target, denied: string[], region: ScreenRegion,
+                      units: number[], signal: AbortSignal): Promise<RegionCapture> {
+    const [id, option, executable, ...blocked] = windowArgs(target, denied);
+    const capturedAt = Date.now();
+    const result = await this.run('roi', [id, option, executable, ...units.map(String), ...blocked], 3400, signal);
+    const separator = result.indexOf(10);
+    const jpeg = result.subarray(separator + 1);
+    if (separator < 1 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new CaptureError('invalid_image', 'Windows 返回了无效的局部截图。');
+    const metadata = JSON.parse(result.subarray(0, separator).toString()) as Pick<RegionCapture, 'target' | 'geometry' | 'pixels' | 'frameSize'>;
+    if (!sameTarget(metadata.target, target)) throw new CaptureError('target_gone', messages.target_gone);
+    return { ...metadata, region, capturedAt, id: randomUUID(), image: 'data:image/jpeg;base64,' + jpeg.toString('base64') };
   }
 
   observe(target: Target, denied: string[]): CaptureWorker {
