@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { Actions, Desktop, Events } from '../shared';
 
+import type { VoiceBridge } from '../voice';
 import type { SelectionBridge } from '../selection';
 
 const channelNames = new Set(['capture', 'observation', 'chat', 'guidance', 'account', 'shown', 'mascot', 'settings', 'interaction']);
@@ -27,4 +28,15 @@ if (window.location.hash === '#selection') {
     },
   };
   contextBridge.exposeInMainWorld('paneSelection', selection);
+} else if (window.location.hash === '#voice') {
+  const voice: VoiceBridge = {
+    call: (name, ...args) => ipcRenderer.invoke('pane:voice', name, args),
+    subscribe(listener) {
+      const channel = 'pane:voice:view';
+      const wrapped = (_event: Electron.IpcRendererEvent, view: Parameters<typeof listener>[0]) => listener(view);
+      ipcRenderer.on(channel, wrapped);
+      return () => { ipcRenderer.removeListener(channel, wrapped); };
+    },
+  };
+  contextBridge.exposeInMainWorld('paneVoice', voice);
 } else contextBridge.exposeInMainWorld('pane', api);

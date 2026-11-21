@@ -128,6 +128,7 @@ export interface Actions {
   snapshot(): Snapshot;
   'settings:update'(settings: Partial<AwarenessOptions & CompanionOptions & SelectionOptions & Pick<Settings, 'theme' | 'pinned' | 'autoCapture' | 'denied' | 'provider'>>): Settings;
   'window:hide'(): void;
+  'voice:open'(): void;
   'companion:appearance'(): MascotState;
   'companion:toggle'(): Promise<void>;
   'companion:expand'(panel?: WindowSurface['panel']): void;

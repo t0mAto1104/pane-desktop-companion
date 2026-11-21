@@ -1,4 +1,6 @@
 import { SelectionToolbar } from './SelectionToolbar';
+import { VoicePanel } from './VoicePanel';
+import { Mic } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowUp, Camera, Maximize2, ChevronDown, ChevronRight, History, Image, Link2, LoaderCircle, MessageSquare, Minus,
@@ -411,6 +413,7 @@ function App() {
       <main>
         <div className="conversation-header">
           {!compact && <IconButton title={sidebar ? '隐藏侧栏' : '显示侧栏'} pressed={sidebar} onClick={() => setSidebar(!sidebar)}><PanelLeft size={17} /></IconButton>}
+          <IconButton title="语音提问" onClick={() => void call('voice:open').catch(fail)}><Mic size={16} /></IconButton>
           <span className="conversation-heading">{title}</span>
           <button className="button guide-launch" onClick={() => { clearError(); void call('guidance:open').catch(fail); }}>桌面指导</button>
           <button className="model-button" onClick={showSettings} title="配置连接和模型">
@@ -616,4 +619,4 @@ function App() {
 
 const mascot = window.location.hash === '#mascot';
 if (mascot) document.documentElement.classList.add('mascot-surface');
-createRoot(document.getElementById('root')!).render(window.location.hash === '#selection' ? <SelectionToolbar /> : mascot ? <Mascot /> : <App />);
+createRoot(document.getElementById('root')!).render(window.location.hash === '#voice' ? <VoicePanel /> : window.location.hash === '#selection' ? <SelectionToolbar /> : mascot ? <Mascot /> : <App />);
