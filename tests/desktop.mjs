@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,7 @@ const temporary = resolve(tmpdir());
 const profile = await mkdtemp(join(temporary, 'pane-qa-'));
 const helper = resolve('native/bin/window-capture.exe');
 const launcher = join(profile, 'mock');
+const requestLog = join(profile, 'inference.log');
 const packaged = process.argv.includes('--packaged');
 const production = packaged || process.argv.includes('--production');
 let fixture;
@@ -21,7 +23,8 @@ let desktop;
 async function openApp() {
   const executablePath = packaged ? resolve('release/win-unpacked/Pane.exe') : electron;
   const entry = production ? '.' : resolve('dist/test/main.cjs');
-  return driver.launch({ executablePath, args: [...(packaged ? [] : [entry]), '--user-data-dir=' + launcher], timeout: 25_000 });
+  return driver.launch({ executablePath, args: [...(packaged ? [] : [entry]), '--user-data-dir=' + launcher],
+    env: { ...process.env, PANE_TEST_REQUEST_LOG: requestLog }, timeout: 25_000 });
 }
 
 async function shot(page) {
@@ -60,6 +63,17 @@ try {
   page.on('pageerror', error => console.error('Renderer error:', error.message));
   await page.getByRole('heading', { name: '聊聊屏幕上的内容' }).waitFor({ timeout: 10_000 });
   const snapshot = () => page.evaluate(async () => (await window.pane.call('snapshot')).value);
+  async function waitSnapshot(check, expectation) {
+    const until = Date.now() + 10_000;
+    while (Date.now() < until) {
+      const state = await snapshot();
+      if (check(state)) return state;
+      await new Promise(done => setTimeout(done, 60));
+    }
+    const state = await snapshot();
+    throw new Error('Expected ' + expectation + '. Capture: ' + state.capture.error +
+      '. Observation: ' + state.observation.phase + ' ' + (state.observation.reason ?? ''));
+  }
   const initial = await snapshot();
   assert.equal(initial.shortcut, true, 'shortcut registered');
   assert.equal(await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isAlwaysOnTop()), true);
@@ -117,10 +131,7 @@ try {
     await fixturePage.evaluate(() => { document.body.style.backgroundColor = '#bb5039'; });
     const previousShot = (await snapshot()).capture.shot.id;
     await page.getByRole('button', { name: '刷新截图' }).click();
-    await page.waitForFunction(async previous => {
-      const shot = (await window.pane.call('snapshot')).value.capture.shot;
-      return shot && shot.id !== previous;
-    }, previousShot, { timeout: 10000 });
+    await waitSnapshot(({ capture }) => capture.shot && capture.shot.id !== previousShot, 'refreshed manual screenshot');
     const second = await shot(page);
     assert.ok(second.r > second.g + 60, JSON.stringify(second));
     console.log('Prior HWND, real WGC pixels, preview dismissal, binding and refresh passed.');
@@ -166,6 +177,7 @@ try {
 
     desktop = await openApp();
     page = await desktop.firstWindow();
+    page.setDefaultTimeout(10000);
     await page.getByText('10 手', { exact: true }).waitFor();
     assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
     await page.getByRole('button', { name: /^删除对话/ }).focus();
@@ -173,6 +185,151 @@ try {
     await page.getByRole('button', { name: '删除', exact: true }).click();
     await page.getByText('还没有对话', { exact: true }).waitFor();
     console.log('Denylist, theme persistence, SQLite restart, deletion and screenshot ephemerality passed.');
+    async function desktopAction(action, ...args) {
+      const result = await page.evaluate(([name, params]) => window.pane.call(name, ...params), [action, args]);
+      assert.ok(result.ok, result.error);
+      return result.value;
+    }
+    async function openFixture() {
+      fixture = await driver.launch({ executablePath: electron,
+        args: [resolve('tests/fixture.cjs'), '--user-data-dir=' + join(profile, 'awareness-fixture')], timeout: 25_000 });
+      await (await fixture.firstWindow()).getByText('纸上交易 · DEMO').waitFor();
+    }
+    async function chooseFixture() {
+      await page.getByTitle('选择目标窗口').click();
+      await page.getByRole('dialog').getByRole('button', { name: /Pane 纸上交易验收/ }).click();
+      const state = await waitSnapshot(({ capture }) =>
+        capture.bound && capture.target?.title === 'Pane 纸上交易验收', 'fixture window binding');
+      return state.capture.target.id;
+    }
+    async function waitPhase(phase) {
+      await waitSnapshot(({ observation }) => observation.phase === phase, 'observation phase ' + phase);
+    }
+    async function waitObservation(id, previous) {
+      const state = await waitSnapshot(({ observation }) => observation.phase === 'watching' &&
+        observation.latest?.targetId === id && observation.latest.observationId !== previous, 'latest observation for ' + id);
+      return state.observation.latest;
+    }
+    async function requests() { return (await readFile(requestLog, 'utf8')).trim().split('\n').length; }
+    async function ask(text, evidence) {
+      const questions = page.getByRole('textbox', { name: '输入你的问题' });
+      await questions.fill(text);
+      await questions.press('Enter');
+      const answer = page.locator('.assistant-message').last();
+      await answer.getByText(new RegExp(evidence)).waitFor();
+      await answer.getByRole('button', { name: '重发上一条' }).waitFor();
+    }
+
+    const oldDeny = initial.settings.denied;
+    await desktopAction('settings:update', { denied: oldDeny, monitoringIntervalMs: 350, maxObservations: 2 });
+    await page.getByRole('switch', { name: '屏幕感知' }).click();
+    await waitPhase('unbound');
+    await openFixture();
+    const fixtureId = await chooseFixture();
+    const firstObservation = await waitObservation(fixtureId);
+    await page.getByText('正在观察', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '预览截图', exact: true }).count(), 0,
+      'sampling never pushes screenshot pixels through IPC');
+    assert.ok(!JSON.stringify((await snapshot()).observation).includes('base64'));
+    const before = await requests();
+    await new Promise(done => setTimeout(done, 1250));
+    assert.equal((await snapshot()).observation.latest.observationId, firstObservation.observationId);
+    assert.equal(await requests(), before, 'observation must never trigger inference');
+
+    await page.getByRole('button', { name: '预览最近观察' }).click();
+    await page.getByRole('dialog').getByRole('img', { name: 'Pane 纸上交易验收' }).waitFor();
+    await page.getByRole('button', { name: '关闭弹窗' }).click();
+
+    await page.getByRole('button', { name: '刷新截图' }).click();
+    await shot(page);
+    const stale = (await snapshot()).capture.shot;
+    await fixture.firstWindow().then(fixturePage => fixturePage.evaluate(() => { document.body.style.backgroundColor = '#854fbc'; }));
+    const updated = await waitObservation(fixtureId, firstObservation.observationId);
+    assert.ok(updated.changeScore > 0.6);
+    const currentShot = await desktopAction('observation:preview', updated.observationId);
+    const fingerprint = image => createHash('sha256').update(image).digest('hex').slice(0, 12);
+    assert.notEqual(fingerprint(stale.image), fingerprint(currentShot.image));
+
+    await ask('观察验收：使用最新截图', fingerprint(currentShot.image));
+    const active = (await snapshot()).conversationId;
+    const turns = await desktopAction('chat:open', active);
+    assert.equal(turns.find(item => item.role === 'user').imageLabel, '屏幕观察');
+    await ask('观察验收：重复观察', '0 张');
+    await page.getByRole('button', { name: '预览最近观察' }).click();
+    await page.getByRole('button', { name: '本条附上观察截图' }).click();
+    await ask('观察验收：明确重附', fingerprint(currentShot.image));
+    await page.getByRole('checkbox', { name: '发送时使用最新屏幕观察' }).uncheck();
+    await ask('观察验收：仅文字', '0 张');
+    assert.equal(await requests(), before + 4);
+    console.log('Local observation, deduplicated/forced AI context, manual-shot ordering and explicit send passed.');
+
+    await page.getByRole('button', { name: '暂停监控' }).click();
+    await waitPhase('paused');
+    assert.equal(await desktopAction('observation:preview', updated.observationId), null);
+    await page.getByRole('button', { name: '恢复监控' }).click();
+    const resumed = await waitObservation(fixtureId, updated.observationId);
+
+    const resize = await fixture.evaluate(({ BrowserWindow, screen }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      const displays = screen.getAllDisplays();
+      const from = win.getBounds();
+      const other = displays.find(display => display.id !== screen.getDisplayMatching(from).id);
+      const here = other?.workArea ?? screen.getDisplayMatching(from).workArea;
+      win.setBounds({ x: here.x + 45, y: here.y + 45, width: from.width + 70, height: from.height + 40 });
+      return { movedToAnotherDisplay: !!other, scales: displays.map(display => display.scaleFactor) };
+    });
+    const resized = await waitObservation(fixtureId, resumed.observationId);
+    assert.equal(resized.changeScore, 1);
+    console.log('WGC resize/recreation passed. Display scale factors:', resize.scales, 'Cross-display move:', resize.movedToAnotherDisplay);
+
+    await page.getByRole('button', { name: '隐藏到托盘' }).click();
+    assert.equal(await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), false);
+    await fixture.firstWindow().then(fixturePage => fixturePage.evaluate(() => { document.body.style.backgroundColor = '#ba752c'; }));
+    await waitObservation(fixtureId, resized.observationId);
+    await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolve('tests/hotkey.ps1'), fixtureId.split(':')[0]], { windowsHide: true });
+    await page.waitForFunction(() => document.hasFocus(), undefined, { polling: 80 });
+    console.log('Bound-window observation continues while Pane is hidden in the tray.');
+
+    await fixture.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].minimize());
+    await waitPhase('stopped');
+    assert.equal((await snapshot()).observation.latest, null);
+    await ask('观察验收：捕获停止后仅文字', '0 张');
+    await fixture.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
+    await page.getByRole('button', { name: '刷新截图' }).click();
+    await shot(page);
+    await page.getByRole('button', { name: '移除截图' }).click();
+    await page.getByRole('button', { name: '恢复监控' }).click();
+    await waitObservation(fixtureId);
+
+    await fixture.close();
+    fixture = undefined;
+    await waitPhase('stopped');
+    assert.equal((await snapshot()).observation.latest, null);
+    await openFixture();
+    await page.getByRole('button', { name: '恢复监控' }).click();
+    await waitPhase('stopped');
+    assert.equal((await snapshot()).observation.latest, null, 'a reopened window must be explicitly bound');
+    const reopened = await chooseFixture();
+    assert.notEqual(reopened, fixtureId);
+    const fresh = await waitObservation(reopened);
+
+    const nativeWindow = JSON.parse((await run(helper, ['list', '0'], { windowsHide: true })).stdout).find(item => item.id === reopened);
+    assert.ok(nativeWindow);
+    await assert.rejects(run(helper, ['observe', '0', reopened, 'ELECTRON.EXE'], { windowsHide: true }), { stderr: 'blocked' });
+    const parts = reopened.split(':');
+    await assert.rejects(run(helper, ['observe', '0', [parts[0], parts[1], '1'].join(':')], { windowsHide: true }), { stderr: 'target_gone' });
+
+    await desktopAction('settings:update', { denied: ['ELECTRON.EXE'] });
+    await waitPhase('stopped');
+    assert.match((await snapshot()).observation.reason, /禁止捕获/);
+    assert.equal(await desktopAction('observation:preview', fresh.observationId), null);
+    assert.ok(!(await desktopAction('window:list')).some(target => target.id === reopened));
+    await page.getByRole('switch', { name: '屏幕感知' }).click();
+    await waitPhase('off');
+    assert.equal(await requests(), before + 5);
+    console.log('Pause/resume, failed-capture fallback, window identity and reopen, denylist and disable passed.');
+
+
   }
 } finally {
   await fixture?.close();

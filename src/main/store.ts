@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import type { Conversation, Message, Settings } from '../shared';
+import { awarenessOptions, type Conversation, type Message, type Settings } from '../shared';
 
 const defaults: Settings = {
+  ...awarenessOptions({}),
   theme: 'system', pinned: true, autoCapture: true, denied: ['CredentialUIBroker.exe', 'LogonUI.exe', 'KeePass.exe', 'KeePassXC.exe', '1Password.exe'], models: {}, provider: 'chatgpt',
 };
 
@@ -44,7 +45,10 @@ export class Store {
 
   clear(key: string) { this.query('DELETE FROM kv WHERE key = ?').run(key); }
 
-  settings(): Settings { return { ...defaults, ...this.read<Partial<Settings>>('settings') }; }
+  settings(): Settings {
+    const saved = this.read<Partial<Settings>>('settings') ?? {};
+    return { ...defaults, ...saved, ...awarenessOptions(saved) };
+  }
 
   list(): Conversation[] {
     return this.query('SELECT id, title, updatedAt FROM conversations ORDER BY updatedAt DESC, rowid DESC').all() as unknown as Conversation[];

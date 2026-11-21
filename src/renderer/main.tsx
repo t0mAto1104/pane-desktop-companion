@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowUp, ChevronDown, ChevronRight, History, Image, Link2, LoaderCircle, MessageSquare, Minus,
-  Monitor, PanelLeft, Pin, Plus, RefreshCw, ScanLine, Settings2, Square, Trash2, Unlink, X } from 'lucide-react';
+  Monitor, PanelLeft, Pause, Pin, Play, Plus, RefreshCw, ScanLine, Settings2, Square, Trash2, Unlink, X } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { Account, Actions, CaptureState, Conversation, Message, Model, Run, Settings, Target } from '../shared';
+import { AWARENESS_RANGES, type Account, type Actions, type CaptureState, type Conversation, type Message, type Model,
+  type ObservationState, type ObservationUse, type Run, type Screenshot, type Settings, type Target } from '../shared';
 import './style.css';
 
 async function call<K extends keyof Actions>(name: K, ...args: Parameters<Actions[K]>): Promise<Awaited<ReturnType<Actions[K]>>> {
@@ -19,12 +20,25 @@ function IconButton({ title, children, onClick, pressed, disabled }: { title: st
   return <button className={`icon ${pressed ? 'on' : ''}`} title={title} aria-label={title} aria-pressed={pressed} onClick={onClick} disabled={disabled}>{children}</button>;
 }
 
+const phaseLabels: Record<ObservationState['phase'], string> = {
+  off: '已关闭', unbound: '等待绑定窗口', starting: '正在采样', watching: '正在观察',
+  changing: '正在确认变化', paused: '已暂停', stopped: '观察已停止',
+};
+const observationFields = [
+  { key: 'monitoringIntervalMs', title: '采样间隔（毫秒）' },
+  { key: 'changeThreshold', title: '变化阈值（比例）' },
+  { key: 'maxObservations', title: '保留观察数量' },
+] as const;
+
 function App() {
   const [settings, setSettings] = useState<Settings>();
   const [account, setAccount] = useState<Account>();
   const [models, setModels] = useState<Model[]>([]);
   const [modelBusy, setModelBusy] = useState(false);
   const [capture, setCapture] = useState<CaptureState>({ target: null, pending: false, bound: false, shot: null });
+  const [observation, setObservation] = useState<ObservationState>({ phase: 'off', target: null, latest: null });
+  const [observationUse, setObservationUse] = useState<ObservationUse>('auto');
+  const [observedPreview, setObservedPreview] = useState<Screenshot | null>(null);
   const [history, setHistory] = useState<Conversation[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -34,7 +48,7 @@ function App() {
   const [shortcut, setShortcut] = useState(true);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
-  const [overlay, setOverlay] = useState<'settings' | 'windows' | 'preview' | 'delete' | null>(null);
+  const [overlay, setOverlay] = useState<'settings' | 'windows' | 'preview' | 'observation' | 'delete' | null>(null);
   const [sidebar, setSidebar] = useState(() => window.innerWidth >= 760);
   const [targets, setTargets] = useState<Target[] | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
@@ -66,8 +80,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let observed = false;
     const subscriptions = [
       window.pane.subscribe('capture', setCapture),
+      window.pane.subscribe('observation', state => { observed = true; setObservation(state); }),
       window.pane.subscribe('shown', () => { setOverlay(null); focusComposer(); }),
       window.pane.subscribe('account', () => { void refreshAccount(); }),
       window.pane.subscribe('chat', update => {
@@ -87,6 +103,7 @@ function App() {
     void call('snapshot').then(async state => {
       apply(state.settings);
       setCapture(state.capture);
+      if (!observed) setObservation(state.observation);
       setShortcut(state.shortcut);
       setRun(state.run);
       latestRun.current = state.run;
@@ -148,6 +165,14 @@ function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [overlay, fail]);
 
+  const observing = observation.phase === 'starting' || observation.phase === 'watching' || observation.phase === 'changing';
+  useEffect(() => {
+    if (observedPreview && (overlay !== 'observation' || !observing || observedPreview.target.id !== observation.target?.id)) {
+      setObservedPreview(null);
+      setOverlay(value => value === 'observation' ? null : value);
+    }
+  }, [observing, observation.target?.id, observedPreview, overlay]);
+
   function clearError() { setError(''); setSaved(false); }
   async function change(patch: Parameters<Actions['settings:update']>[0]) {
     clearError();
@@ -167,9 +192,26 @@ function App() {
   }
   async function bind(id: string | null) {
     clearError();
+    setObservationUse('auto');
     setOverlay(null);
     try { await call('capture:bind', id); focusComposer(); } catch (reason) { fail(reason); }
   }
+  async function previewObservation() {
+    if (!observation.latest) return;
+    clearError();
+    try {
+      const preview = await call('observation:preview', observation.latest.observationId);
+      if (!preview) throw new Error('此观察已过期，请预览当前观察。');
+      setObservedPreview(preview);
+      setOverlay('observation');
+    } catch (reason) { fail(reason); }
+  }
+
+  function removeImage() {
+    setObservationUse('omit');
+    void call('capture:remove').catch(fail);
+  }
+
   async function newChat() {
     clearError();
     try {
@@ -215,10 +257,12 @@ function App() {
         id = (await call('chat:new')).id;
         await openChat(id, false);
       }
+      const use = observing ? observationUse : 'omit';
       const response = retry
-        ? await call('chat:retry', id, capture.shot?.id ?? null)
-        : await call('chat:send', id, text, capture.shot?.id ?? null);
+        ? await call('chat:retry', id, capture.shot?.id ?? null, use)
+        : await call('chat:send', id, text, capture.shot?.id ?? null, use);
       if (!retry) setText('');
+      setObservationUse('auto');
       if ((await call('snapshot')).run?.id === response.id) {
         if (latestRun.current?.id !== response.id) setDelta('');
         latestRun.current = response;
@@ -299,16 +343,41 @@ function App() {
             {capture.target && <><IconButton title="刷新截图" disabled={capture.pending} onClick={() => { clearError(); void call('capture:refresh').catch(fail); }}><RefreshCw className={capture.pending ? 'spin' : ''} size={15} /></IconButton>
               {capture.bound && <IconButton title="解除绑定" onClick={() => void bind(null)}><Unlink size={15} /></IconButton>}</>}
             <span className="context-status">{capture.pending ? '正在捕获' : capture.bound ? '已绑定' : capture.target ? '前台窗口' : ''}</span>
+            <button className="context-button awareness-switch" role="switch" aria-checked={!!settings?.screenAwarenessEnabled}
+              onClick={() => { setObservationUse('auto'); void change({ screenAwarenessEnabled: !settings?.screenAwarenessEnabled }); }}>
+              <ScanLine size={14} /><span>屏幕感知</span>
+            </button>
           </div>
+          {settings?.screenAwarenessEnabled && <div className="observation-bar">
+            <div className="observation-description">
+              <span className={'status-dot' + (observing ? ' online' : '')} />
+              <strong title={observation.target?.title}>{observation.target?.title ?? '请选择要观察的窗口'}</strong>
+              <span role="status" className="observation-phase">{phaseLabels[observation.phase]}</span>
+              {observation.latest && <time dateTime={new Date(observation.latest.capturedAt).toISOString()} title="最近观察时间">
+                {new Date(observation.latest.capturedAt).toLocaleTimeString('zh-CN')} · 变化 {(observation.latest.changeScore * 100).toFixed(1)}%
+              </time>}
+            </div>
+            <div className="observation-actions">
+              {observation.latest && <IconButton title="预览最近观察" onClick={() => void previewObservation()}><Image size={15} /></IconButton>}
+              {observing && <IconButton title="暂停监控" onClick={() => void call('observation:pause').catch(fail)}><Pause size={15} /></IconButton>}
+              {(observation.phase === 'paused' || observation.phase === 'stopped') && <IconButton title="恢复监控" onClick={() => void call('observation:resume').catch(fail)}><Play size={15} /></IconButton>}
+            </div>
+            {observation.reason && <div className="observation-reason" role="alert">{observation.reason}</div>}
+          </div>}
           <div className="composer">
             {capture.shot && <div className="attachment"><button className="attachment-preview" onClick={() => { clearError(); setOverlay('preview'); }} aria-label="预览截图">
               <img src={capture.shot.image} alt="" /><span><strong>窗口截图</strong><small>{capture.shot.target.title}</small></span>
-            </button><IconButton title="移除截图" onClick={() => void call('capture:remove').catch(fail)}><X size={15} /></IconButton></div>}
+            </button><IconButton title="移除截图" onClick={removeImage}><X size={15} /></IconButton></div>}
             <textarea ref={input} value={text} maxLength={20_000} rows={2} placeholder="输入你的问题…" aria-label="输入你的问题"
               onChange={event => setText(event.target.value)} onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); void submit(); }
               }} />
-            <div className="composer-footer"><span>{capture.shot ? '截图将随本条消息发送' : 'Shift + Enter 换行'}</span>
+            <div className="composer-footer"><span>
+              {observing ? <label className="observe-attach"><input type="checkbox" checked={observationUse !== 'omit'}
+                onChange={event => setObservationUse(event.target.checked ? 'auto' : 'omit')} />
+                {observationUse === 'image' ? '本条消息重新附上观察截图' : '发送时使用最新屏幕观察'}</label>
+                : capture.shot ? '截图将随本条消息发送' : 'Shift + Enter 换行'}
+            </span>
               {run ? <button className="send stop" title="停止生成" aria-label="停止生成" onClick={() => void call('chat:stop').catch(fail)}><Square size={13} fill="currentColor" /></button>
                 : <button className="send" title="发送" aria-label="发送" disabled={sending || (!text.trim() && !capture.shot)} onClick={() => void submit()}>{sending ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={20} />}</button>}
             </div>
@@ -318,8 +387,8 @@ function App() {
       </main>
     </div>
     {overlay && <div className="overlay" onMouseDown={event => { if (event.target === event.currentTarget) setOverlay(null); }}>
-      <section ref={dialog} className={`dialog ${overlay === 'preview' ? 'preview-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="dialog-title">
-        <div className="dialog-heading"><h2 id="dialog-title">{{ settings:'设置', windows:'选择目标窗口', preview:'截图预览', delete:'删除对话' }[overlay]}</h2><IconButton title="关闭弹窗" onClick={() => setOverlay(null)}><X size={18} /></IconButton></div>
+      <section ref={dialog} className={`dialog ${overlay === 'preview' || overlay === 'observation' ? 'preview-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+        <div className="dialog-heading"><h2 id="dialog-title">{{ settings:'设置', windows:'选择目标窗口', preview:'截图预览', observation:'最近观察', delete:'删除对话' }[overlay]}</h2><IconButton title="关闭弹窗" onClick={() => setOverlay(null)}><X size={18} /></IconButton></div>
         {error && <div className="notice dialog-notice" role="alert">{error}</div>}
         {overlay === 'windows' && <div className="dialog-body">
           {!targets && <div className="waiting"><LoaderCircle size={15} className="spin" /> 正在查找窗口</div>}
@@ -330,8 +399,15 @@ function App() {
         </div>}
         {overlay === 'preview' && (capture.shot ? <div className="dialog-body preview-content">
           <img src={capture.shot.image} alt={capture.shot.target.title} />
-          <div className="preview-actions"><span>{capture.shot.target.title}</span><button className="button" onClick={() => { setOverlay(null); void call('capture:remove').catch(fail); }}>取消发送截图</button></div>
+          <div className="preview-actions"><span>{capture.shot.target.title}</span><button className="button" onClick={() => { setOverlay(null); removeImage(); }}>取消发送截图</button></div>
         </div> : <p className="muted dialog-body">截图已清除。</p>)}
+        {overlay === 'observation' && observedPreview && <div className="dialog-body preview-content">
+          <img src={observedPreview.image} alt={observedPreview.target.title} />
+          <div className="preview-actions"><span>{observedPreview.target.title}</span><div className="button-row">
+            <button className="button" onClick={() => { setObservationUse('omit'); setOverlay(null); }}>本条不使用观察</button>
+            <button className="button primary" onClick={() => { setObservationUse('image'); setOverlay(null); focusComposer(); }}>本条附上观察截图</button>
+          </div></div>
+        </div>}
         {overlay === 'delete' && <div className="dialog-body"><p>将从本机删除这段对话及其消息。</p><div className="button-row end"><button className="button" onClick={() => setOverlay(null)}>取消</button><button className="button danger" onClick={() => void deleteChat()}>删除</button></div></div>}
         {overlay === 'settings' && settings && <div className="dialog-body settings-body">
           <section><h3>账户和模型</h3>
@@ -357,6 +433,21 @@ function App() {
             <label className="field">主题<select aria-label="主题" value={settings.theme} onChange={event => void change({ theme: event.target.value as Settings['theme'] })}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
             <label className="check-field"><input type="checkbox" checked={settings.pinned} onChange={event => void change({ pinned: event.target.checked })} /> 聊天窗口保持置顶</label>
             <label className="check-field"><input type="checkbox" checked={settings.autoCapture} onChange={event => void change({ autoCapture: event.target.checked })} /> 快捷键唤出时捕获目标窗口</label>
+          </section>
+          <section><h3>屏幕感知</h3>
+            <label className="check-field"><input type="checkbox" checked={settings.screenAwarenessEnabled}
+              onChange={event => { setObservationUse('auto'); void change({ screenAwarenessEnabled: event.target.checked }); }} /> 观察用户绑定的窗口</label>
+            <p className="muted">在本机检测画面变化。只有发送问题时才使用观察上下文。</p>
+            <div className="observation-fields">
+              {observationFields.map(({ key, title }) => {
+                const { min, max, step } = AWARENESS_RANGES[key];
+                return <label className="field" key={key}>{title}
+                  <input type="number" min={min} max={max} step={step} key={settings[key]} defaultValue={settings[key]}
+                    onBlur={event => { if (event.target.valueAsNumber !== settings[key]) void change({ [key]: event.target.valueAsNumber }); }}
+                    onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
+                </label>;
+              })}
+            </div>
           </section>
           <section><h3>禁止捕获的应用</h3>
             <label className="field">每行一个可执行文件名<textarea rows={4} value={denyDraft} onChange={event => { setDenyDraft(event.target.value); setSaved(false); }} placeholder="example.exe" /></label>

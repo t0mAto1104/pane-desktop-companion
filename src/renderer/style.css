@@ -179,3 +179,17 @@ main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 @media (max-width: 739px) { .sidebar { width: 166px; } .composer-shell, .message-list { width: calc(100% - 24px); } }
 @media (max-height: 540px) { .welcome-art { display: none; } .welcome h1 { margin-top: 0; } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+.awareness-switch { margin-left: auto; }
+.awareness-switch[aria-checked="true"] { color: var(--accent); background: var(--wash); border-color: transparent; }
+.observation-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 3px 7px; margin: 0 0 7px; padding: 4px 6px 4px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.observation-description { display: flex; flex: 1; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; color: var(--muted); font-size: 11px; }
+.observation-description strong { max-width: min(100%, 200px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 600; }
+.observation-description time { color: var(--dim); white-space: nowrap; }
+.observation-actions { display: flex; align-items: center; gap: 2px; }
+.observation-actions .icon { width: 25px; height: 24px; }
+.observation-reason { flex-basis: 100%; color: var(--error); font-size: 11px; padding-bottom: 2px; }
+.observe-attach { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.observe-attach input { accent-color: var(--accent); }
+.observation-fields { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; }
+.observation-fields input { width: 100%; border: 1px solid var(--edge); border-radius: 7px; padding: 5px 7px; color: var(--ink); background: var(--surface); }

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
 import { setTimeout } from 'node:timers/promises';
 import type { ResponseInputMessage } from '../vendor/siwc/src/types';
 
@@ -18,6 +20,19 @@ export class AI {
 
   async stream(_provider: string, model: string, input: ResponseInputMessage[], signal: AbortSignal, onDelta: (delta: string) => void) {
     assert.equal(model, 'fixture-vision');
+    const file = process.env.PANE_TEST_REQUEST_LOG;
+    if (file) appendFileSync(file, 'stream\n');
+    const current = input.at(-1)?.content;
+    const question = Array.isArray(current) ? current.find(part => part.type === 'input_text')?.text : current;
+    if (question?.startsWith('观察验收：')) {
+      const images = input.flatMap(item => Array.isArray(item.content)
+        ? item.content.flatMap(part => part.type === 'input_image' ? [part.image_url] : []) : []);
+      assert.ok(images.length <= 1, 'awareness suppresses the older image history');
+      const fingerprint = images[0] ? createHash('sha256').update(images[0]).digest('hex').slice(0, 12) : '';
+      const answer = '当前请求：' + images.length + ' 张' + (fingerprint ? ' · ' + fingerprint : '');
+      onDelta(answer);
+      return answer;
+    }
     assert.ok(input.some(item => Array.isArray(item.content) &&
       item.content.some(part => part.type === 'input_image' && part.image_url.startsWith('data:image/jpeg;base64,/9j/'))));
     const followup = input.at(-1)?.content === '这是多少手？';

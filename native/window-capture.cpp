@@ -11,6 +11,8 @@
 #include <winrt/Windows.Foundation.Metadata.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
 #include <algorithm>
+#include <atomic>
+#include <memory>
 #include <chrono>
 #include <cstdio>
 #include <fcntl.h>
@@ -190,73 +192,201 @@ std::vector<uint8_t> encodeJpeg(UINT width, UINT height, UINT stride, BYTE* pixe
     return result;
 }
 
-std::vector<uint8_t> snapshot(HWND hwnd) {
-    if (!GraphicsCaptureSession::IsSupported()) throw Failure("unsupported");
-    auto item = get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
-    GraphicsCaptureItem target{nullptr};
-    check_hresult(item->CreateForWindow(hwnd, guid_of<GraphicsCaptureItem>(), put_abi(target)));
+constexpr UINT SampleWidth = 96;
+constexpr UINT SampleHeight = 54;
+constexpr auto CaptureFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 
-    com_ptr<ID3D11Device> device;
-    com_ptr<ID3D11DeviceContext> context;
-    HRESULT created = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-        nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put());
-    if (FAILED(created)) {
-        device = nullptr;
-        context = nullptr;
-        check_hresult(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put()));
-    }
-    com_ptr<IInspectable> inspectable;
-    check_hresult(CreateDirect3D11DeviceFromDXGIDevice(device.as<IDXGIDevice>().get(), inspectable.put()));
-    const auto graphics = inspectable.as<Direct3D11::IDirect3DDevice>();
-    const auto size = target.Size();
+void validateSize(winrt::Windows::Graphics::SizeInt32 size) {
     if (size.Width < 1 || size.Height < 1 || size.Width > 8192 || size.Height > 8192 ||
         static_cast<uint64_t>(size.Width) * size.Height > 40'000'000) throw Failure("invalid_size");
+}
 
-    const auto pool = Direct3D11CaptureFramePool::CreateFreeThreaded(graphics, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
-    const auto session = pool.CreateCaptureSession(target);
-    if (winrt::Windows::Foundation::Metadata::ApiInformation::IsPropertyPresent(
-        L"Windows.Graphics.Capture.GraphicsCaptureSession", L"IsCursorCaptureEnabled")) session.IsCursorCaptureEnabled(false);
-    session.StartCapture();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (std::chrono::steady_clock::now() < deadline) {
-        auto frame = pool.TryGetNextFrame();
-        if (!frame) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(15));
-            continue;
+class WindowCapture {
+public:
+    explicit WindowCapture(HWND hwnd, bool monitoring = false) {
+        if (!GraphicsCaptureSession::IsSupported()) throw Failure("unsupported");
+        auto item = get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+        check_hresult(item->CreateForWindow(hwnd, guid_of<GraphicsCaptureItem>(), put_abi(target)));
+        target.Closed([closed = closed](auto const&, auto const&) { closed->store(true); });
+
+        HRESULT created = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put());
+        if (FAILED(created)) {
+            device = nullptr;
+            context = nullptr;
+            check_hresult(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put()));
         }
-        auto content = frame.ContentSize();
-        auto access = frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
-        com_ptr<ID3D11Texture2D> texture;
-        check_hresult(access->GetInterface(IID_PPV_ARGS(texture.put())));
-        D3D11_TEXTURE2D_DESC desc{};
-        texture->GetDesc(&desc);
-        if (content.Width < 1 || content.Height < 1 ||
-            static_cast<UINT>(content.Width) > desc.Width || static_cast<UINT>(content.Height) > desc.Height)
-            throw Failure("resized");
-        desc.Usage = D3D11_USAGE_STAGING;
-        desc.BindFlags = 0;
-        desc.MiscFlags = 0;
-        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        com_ptr<ID3D11Texture2D> staging;
-        check_hresult(device->CreateTexture2D(&desc, nullptr, staging.put()));
-        context->CopyResource(staging.get(), texture.get());
+        com_ptr<IInspectable> inspectable;
+        check_hresult(CreateDirect3D11DeviceFromDXGIDevice(device.as<IDXGIDevice>().get(), inspectable.put()));
+        graphics = inspectable.as<Direct3D11::IDirect3DDevice>();
+        poolSize = target.Size();
+        validateSize(poolSize);
+        pool = Direct3D11CaptureFramePool::CreateFreeThreaded(graphics, CaptureFormat, 2, poolSize);
+        session = pool.CreateCaptureSession(target);
+        using winrt::Windows::Foundation::Metadata::ApiInformation;
+        const auto captureClass = L"Windows.Graphics.Capture.GraphicsCaptureSession";
+        if (ApiInformation::IsPropertyPresent(captureClass, L"IsCursorCaptureEnabled")) session.IsCursorCaptureEnabled(false);
+        if (monitoring && ApiInformation::IsPropertyPresent(captureClass, L"MinUpdateInterval"))
+            session.MinUpdateInterval(std::chrono::milliseconds(120));
+        session.StartCapture();
+    }
+
+    void ensureOpen() const {
+        if (closed->load()) throw Failure("target_gone");
+    }
+
+    // For a static window WGC may produce no additional frames; retain the last sample.
+    bool readLatest() {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        do {
+            ensureOpen();
+            auto frame = pool.TryGetNextFrame();
+            if (!frame) {
+                if (staging) return false;
+                std::this_thread::sleep_for(std::chrono::milliseconds(15));
+                continue;
+            }
+            for (int i = 0; i < 3; ++i) {
+                auto next = pool.TryGetNextFrame();
+                if (!next) break;
+                frame.Close();
+                frame = std::move(next);
+            }
+
+            const auto size = frame.ContentSize();
+            validateSize(size);
+            if (size.Width != poolSize.Width || size.Height != poolSize.Height) {
+                frame.Close();
+                staging = nullptr;
+                pool.Recreate(graphics, CaptureFormat, 2, size);
+                poolSize = size;
+                continue;
+            }
+
+            auto access = frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
+            com_ptr<ID3D11Texture2D> texture;
+            check_hresult(access->GetInterface(IID_PPV_ARGS(texture.put())));
+            D3D11_TEXTURE2D_DESC desc{};
+            texture->GetDesc(&desc);
+            if (static_cast<UINT>(size.Width) > desc.Width || static_cast<UINT>(size.Height) > desc.Height)
+                throw Failure("resized");
+            if (!staging) {
+                desc.Usage = D3D11_USAGE_STAGING;
+                desc.BindFlags = 0;
+                desc.MiscFlags = 0;
+                desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                check_hresult(device->CreateTexture2D(&desc, nullptr, staging.put()));
+            }
+            context->CopyResource(staging.get(), texture.get());
+            frame.Close();
+            return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        throw Failure("no_frame");
+    }
+
+    UINT width() const { return static_cast<UINT>(poolSize.Width); }
+    UINT height() const { return static_cast<UINT>(poolSize.Height); }
+
+    std::vector<uint8_t> jpeg() {
+        return readPixels([&](BYTE* data, UINT stride) {
+            return encodeJpeg(width(), height(), stride, data, stride * height());
+        });
+    }
+
+    std::vector<uint8_t> sample() {
+        return readPixels([&](BYTE* data, UINT stride) {
+            std::vector<uint8_t> sample(SampleWidth * SampleHeight * 3);
+            constexpr UINT taps = 4;
+            for (UINT y = 0; y < SampleHeight; ++y) {
+                for (UINT x = 0; x < SampleWidth; ++x) {
+                    unsigned sum[3] = {};
+                    for (UINT dy = 0; dy < taps; ++dy) {
+                        const auto sy = ((y * taps + dy) * 2 + 1) * height() / (SampleHeight * taps * 2);
+                        for (UINT dx = 0; dx < taps; ++dx) {
+                            const auto sx = ((x * taps + dx) * 2 + 1) * width() / (SampleWidth * taps * 2);
+                            const auto pixel = data + sy * stride + sx * 4;
+                            for (UINT channel = 0; channel < 3; ++channel) sum[channel] += pixel[channel];
+                        }
+                    }
+                    for (UINT c = 0; c < 3; ++c) sample[(y * SampleWidth + x) * 3 + c] =
+                        static_cast<uint8_t>(sum[c] / (taps * taps));
+                }
+            }
+            return sample;
+        });
+    }
+
+private:
+    template <typename Read>
+    std::vector<uint8_t> readPixels(Read read) {
+        if (!staging) throw Failure("no_frame");
         D3D11_MAPPED_SUBRESOURCE mapped{};
         check_hresult(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped));
-        struct MapGuard {
+        struct Unmap {
             ID3D11DeviceContext* context;
             ID3D11Texture2D* staging;
-            ~MapGuard() { context->Unmap(staging, 0); }
+            ~Unmap() { context->Unmap(staging, 0); }
         } guard{context.get(), staging.get()};
-        auto result = encodeJpeg(content.Width, content.Height, mapped.RowPitch,
-            static_cast<BYTE*>(mapped.pData), mapped.RowPitch * content.Height);
-        frame.Close();
-        session.Close();
-        pool.Close();
-        return result;
+        return read(static_cast<BYTE*>(mapped.pData), mapped.RowPitch);
     }
-    throw Failure("no_frame");
+
+    GraphicsCaptureItem target{nullptr};
+    com_ptr<ID3D11Device> device;
+    com_ptr<ID3D11DeviceContext> context;
+    com_ptr<ID3D11Texture2D> staging;
+    Direct3D11::IDirect3DDevice graphics{nullptr};
+    Direct3D11CaptureFramePool pool{nullptr};
+    GraphicsCaptureSession session{nullptr};
+    winrt::Windows::Graphics::SizeInt32 poolSize{};
+    std::shared_ptr<std::atomic_bool> closed = std::make_shared<std::atomic_bool>(false);
+};
+
+WindowInfo verifyWindow(HWND hwnd, const std::wstring& id, DWORD assistant, const std::vector<std::wstring>& denied,
+                        const std::wstring& expectedExecutable = {}) {
+    auto current = inspect(hwnd, assistant, denied);
+    if (!current || windowId(*current) != id ||
+        (!expectedExecutable.empty() && !sameName(current->executable, expectedExecutable))) throw Failure("target_gone");
+    if (IsIconic(hwnd)) throw Failure("minimized");
+    DWORD affinity = 0;
+    if (GetWindowDisplayAffinity(hwnd, &affinity) && affinity != WDA_NONE) throw Failure("protected");
+    return std::move(*current);
 }
+
+void writeBytes(const std::vector<uint8_t>& bytes) {
+    if (!bytes.empty() && std::fwrite(bytes.data(), 1, bytes.size(), stdout) != bytes.size()) throw Failure("encode_failed");
+    if (std::fflush(stdout) != 0) throw Failure("encode_failed");
+}
+
+void observe(HWND hwnd, const std::wstring& id, DWORD assistant, const std::vector<std::wstring>& denied,
+             const std::wstring& executable) {
+    WindowCapture capture(hwnd, true);
+    std::vector<uint8_t> lowResolution;
+    std::string command;
+    while (std::getline(std::cin, command)) {
+        verifyWindow(hwnd, id, assistant, denied, executable);
+        capture.ensureOpen();
+        std::vector<uint8_t> screenshot;
+        if (command == "sample") {
+            if (capture.readLatest() || lowResolution.empty()) lowResolution = capture.sample();
+        } else if (command == "jpeg") {
+            // The JPEG must represent the same pixels that were compared in the last sample.
+            if (lowResolution.empty()) throw Failure("no_frame");
+            screenshot = capture.jpeg();
+        } else throw Failure("invalid_request");
+
+        const auto current = verifyWindow(hwnd, id, assistant, denied, executable);
+        capture.ensureOpen();
+        const auto& payload = command == "sample" ? lowResolution : screenshot;
+        const auto kind = command == "sample" ? L"sample" : L"jpeg";
+        const auto dpi = GetDpiForWindow(hwnd);
+        printJson(L"{\"kind\":\"" + std::wstring(kind) + L"\",\"bytes\":" + std::to_wstring(payload.size()) +
+            L",\"width\":" + std::to_wstring(capture.width()) + L",\"height\":" + std::to_wstring(capture.height()) +
+            L",\"dpi\":" + std::to_wstring(dpi) + L",\"target\":" + json(current) + L"}");
+        writeBytes(payload);
+    }
+}
+
 
 constexpr int KeyEditId = 110;
 constexpr size_t KeyCapacity = 513;
@@ -347,9 +477,10 @@ int wmain(int argc, wchar_t** argv) {
         if (argc < 3) throw Failure("invalid_request");
         const std::wstring command = argv[1];
         const auto assistant = std::stoul(argv[2]);
-        if (command == L"capture" && argc < 4) throw Failure("invalid_request");
+        const bool targetCommand = command == L"capture" || command == L"observe";
+        if (targetCommand && argc < 4) throw Failure("invalid_request");
         std::vector<std::wstring> denied;
-        for (int index = (command == L"capture" ? 4 : 3); index < argc; ++index) denied.emplace_back(argv[index]);
+        for (int index = (targetCommand ? 4 : 3); index < argc; ++index) denied.emplace_back(argv[index]);
 
         if (command == L"credential" && argc == 4) { promptKey(reinterpret_cast<HWND>(static_cast<uintptr_t>(std::stoull(argv[3]))), assistant); } else if (command == L"foreground") {
             auto window = inspect(GetAncestor(GetForegroundWindow(), GA_ROOT), assistant, denied);
@@ -369,22 +500,21 @@ int wmain(int argc, wchar_t** argv) {
                 return list.data.size() < 130000;
             }, reinterpret_cast<LPARAM>(&list));
             printJson(list.data + L"]");
-        } else if (command == L"capture") {
+        } else if (targetCommand) {
             const std::wstring id = argv[3];
             const auto hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(std::stoull(id)));
-            auto current = inspect(hwnd, assistant, denied);
-            if (!current || windowId(*current) != id) throw Failure("target_gone");
-            if (IsIconic(hwnd)) throw Failure("minimized");
-            DWORD affinity = 0;
-            if (GetWindowDisplayAffinity(hwnd, &affinity) && affinity != WDA_NONE) throw Failure("protected");
+            const auto current = verifyWindow(hwnd, id, assistant, denied);
             init_apartment(apartment_type::multi_threaded);
-            auto jpeg = snapshot(hwnd);
-            const auto after = inspect(hwnd, assistant, denied);
-            if (!after || windowId(*after) != id || after->executable != current->executable) throw Failure("target_gone");
-            affinity = 0;
-            if (GetWindowDisplayAffinity(hwnd, &affinity) && affinity != WDA_NONE) throw Failure("protected");
-            printJson(json(*after));
-            if (std::fwrite(jpeg.data(), 1, jpeg.size(), stdout) != jpeg.size()) throw Failure("encode_failed");
+            if (command == L"observe") {
+                observe(hwnd, id, assistant, denied, current.executable);
+            } else {
+                WindowCapture capture(hwnd);
+                capture.readLatest();
+                const auto jpeg = capture.jpeg();
+                const auto after = verifyWindow(hwnd, id, assistant, denied, current.executable);
+                printJson(json(after));
+                writeBytes(jpeg);
+            }
         } else throw Failure("invalid_request");
         return 0;
     } catch (const Failure& error) {

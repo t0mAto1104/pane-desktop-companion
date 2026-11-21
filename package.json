@@ -1,6 +1,6 @@
 {
   "name": "pane-desktop-companion",
-  "version": "0.1.0",
+  "version": "2.1.0",
   "productName": "Pane",
   "description": "Windows desktop window companion",
   "main": "dist/main/main.cjs",

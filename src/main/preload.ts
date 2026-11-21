@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { Actions, Desktop, Events } from '../shared';
 
-const channelNames = new Set(['capture', 'chat', 'account', 'shown']);
+const channelNames = new Set(['capture', 'observation', 'chat', 'account', 'shown']);
 const api: Desktop = {
   call(name: keyof Actions, ...args: unknown[]) {
     return ipcRenderer.invoke('pane:call', name, args);
