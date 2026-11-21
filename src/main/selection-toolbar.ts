@@ -36,7 +36,7 @@ export class SelectionToolbar {
       return { ...start, width: Math.max(1, end.x - start.x), height: Math.max(1, end.y - start.y) };
     });
     const anchor = this.rectangles.at(-1);
-    this.pointer = anchor ? { x: anchor.x, y: anchor.y } : screen.getCursorScreenPoint();
+    this.pointer = anchor ? { x: anchor.x + anchor.width - 1, y: anchor.y + anchor.height - 1 } : screen.getCursorScreenPoint();
     const bounds = this.placement(view);
     if (!bounds) return false;
     let win = this.win;
@@ -76,9 +76,8 @@ export class SelectionToolbar {
   private placement(view: SelectionView) {
     if (!this.pointer) return null;
     const work = screen.getDisplayNearestPoint(this.pointer).workArea;
-    const bounds = selectionPosition(work, this.pointer, this.rectangles, !!(view.notice || view.answer || view.details));
-    if (!bounds || !view.badge) return bounds;
-    return { ...bounds, width: Math.min(32, bounds.width), height: Math.min(32, bounds.height) };
+    const surface = view.badge ? 'badge' : view.notice || view.answer || view.details ? 'card' : 'compact';
+    return selectionPosition(work, this.pointer, this.rectangles, surface);
   }
 
   close() {

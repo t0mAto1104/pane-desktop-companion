@@ -1,7 +1,24 @@
-.selection-surface,.selection-surface body{background:transparent;color:#253044;overflow:hidden}
-.selection-surface[data-theme=dark]{color:#ecedf8;color-scheme:dark}
-.selection-toolbar{height:100vh;border:1px solid #a1abc570;border-radius:9px;background:#f8faff;box-sizing:border-box;opacity:1;transition:opacity 190ms ease;font:12px/1.4 system-ui,sans-serif;overflow:hidden}
-.selection-surface[data-theme=dark] .selection-toolbar{background:#1d2330;border-color:#737f9d80}
+.selection-surface {
+  --selection-ink: #253044;
+  --selection-muted: #4e596d;
+  --selection-panel: #f8faff;
+  --selection-field: #ffffff;
+  --selection-edge: #a1abc5;
+  --selection-hover: #e4e9fa;
+  color-scheme: light;
+}
+.selection-surface[data-theme=dark] {
+  --selection-ink: #eff2ff;
+  --selection-muted: #bec9e2;
+  --selection-panel: #1d2330;
+  --selection-field: #252e40;
+  --selection-edge: #7786a5;
+  --selection-hover: #35415a;
+  color-scheme: dark;
+}
+.selection-surface,.selection-surface body{background:transparent;color:var(--selection-ink);overflow:hidden}
+.selection-toolbar{height:100vh;border:1px solid var(--selection-edge);border-radius:9px;background:var(--selection-panel);color:var(--selection-ink);box-sizing:border-box;opacity:1;transition:opacity 190ms ease;font:12px/1.4 system-ui,sans-serif;overflow:hidden}
+.selection-toolbar :is(button,input,select){color:inherit}
 .selection-fading{opacity:0;pointer-events:none}
 .selection-badge{width:min(32px,100vw);height:min(32px,100vh);display:grid;place-items:center;background:#eef0ff;border-color:#b8bdf9;color:#5050b5}
 .selection-surface[data-theme=dark] .selection-badge{background:#30304e;color:#cccfff}
@@ -9,12 +26,13 @@
 .selection-mini,.selection-card{padding:3px}
 .selection-actions{display:flex;align-items:center;justify-content:space-between;gap:1px;height:30px}
 .selection-actions button{height:26px;display:inline-flex;align-items:center;justify-content:center;gap:3px;border-radius:5px;padding:0 4px;white-space:nowrap}
-.selection-actions button svg{flex:none;width:13px;height:13px}.selection-actions button:hover,.selection-command:hover{background:#7182e428}
+.selection-actions button svg{flex:none;width:13px;height:13px}.selection-actions button:hover,.selection-command:hover{background:var(--selection-hover)}
 .selection-card{padding:5px 7px;display:flex;flex-direction:column;gap:5px}.selection-card .selection-actions{justify-content:flex-start;gap:5px}
 .selection-details{overflow:auto;flex:1;min-height:0}.selection-details p{margin:3px 0 6px}
 .selection-options{display:grid;gap:6px;margin:3px 0 6px}.selection-options label{display:flex;align-items:center;gap:6px}
-.selection-options input:not([type=checkbox]),.selection-options select{min-width:0;border:1px solid #7e87a875;border-radius:5px;padding:3px 5px}
+.selection-options input:not([type=checkbox]),.selection-options select{min-width:0;border:1px solid var(--selection-edge);background:var(--selection-field);border-radius:5px;padding:3px 5px}
+.selection-options input::placeholder{color:var(--selection-muted);opacity:1}
 .selection-options form{display:flex;align-items:center;gap:5px}.selection-options form label,.selection-options form input{flex:1}
-.selection-command,.selection-options form button{display:inline-flex;align-items:center;gap:5px;border:1px solid #a1abc570;border-radius:5px;padding:4px 6px}
-.selection-quote{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.78}
+.selection-command,.selection-options form button{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--selection-edge);border-radius:5px;padding:4px 6px}
+.selection-quote{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--selection-muted)}
 .selection-answer{white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 7px;max-height:174px;overflow:auto}
