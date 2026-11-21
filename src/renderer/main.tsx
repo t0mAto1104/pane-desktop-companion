@@ -6,6 +6,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AWARENESS_RANGES, type Account, type Actions, type CaptureState, type Conversation, type Message, type Model,
   type ObservationState, type ObservationUse, type Run, type Screenshot, type Settings, type Target, type VisualSource } from '../shared';
+import { GuidePanel } from './GuidePanel';
 import './style.css';
 
 async function call<K extends keyof Actions>(name: K, ...args: Parameters<Actions[K]>): Promise<Awaited<ReturnType<Actions[K]>>> {
@@ -55,7 +56,7 @@ function App() {
   const [shortcut, setShortcut] = useState(true);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
-  const [overlay, setOverlay] = useState<'settings' | 'windows' | 'preview' | 'observation' | 'delete' | null>(null);
+  const [overlay, setOverlay] = useState<'settings' | 'windows' | 'preview' | 'observation' | 'delete' | 'guide' | null>(null);
   const [sidebar, setSidebar] = useState(() => window.innerWidth >= 760);
   const [targets, setTargets] = useState<Target[] | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
@@ -92,7 +93,7 @@ function App() {
     const subscriptions = [
       window.pane.subscribe('capture', setCapture),
       window.pane.subscribe('observation', state => { observed = true; setObservation(state); }),
-      window.pane.subscribe('shown', () => { setOverlay(null); focusComposer(); }),
+      window.pane.subscribe('shown', () => { setOverlay(value => value === 'guide' ? value : null); focusComposer(); }),
       window.pane.subscribe('account', () => { void refreshAccount(); }),
       window.pane.subscribe('chat', update => {
         setLastSent(update.run);
@@ -354,6 +355,7 @@ function App() {
         <div className="conversation-header">
           <IconButton title={sidebar ? '隐藏侧栏' : '显示侧栏'} pressed={sidebar} onClick={() => setSidebar(!sidebar)}><PanelLeft size={17} /></IconButton>
           <span className="conversation-heading">{title}</span>
+          <button className="button guide-launch" onClick={() => { clearError(); setOverlay('guide'); }}>桌面指导</button>
           <button className="model-button" onClick={showSettings} title="配置连接和模型">
             <span className={`status-dot ${connected ? 'online' : ''}`}/><span>{connected && activeModel ? activeModel : '连接模型'}</span><ChevronDown size={14} />
           </button>
@@ -449,9 +451,10 @@ function App() {
       </main>
     </div>
     {overlay && <div className="overlay" onMouseDown={event => { if (event.target === event.currentTarget) setOverlay(null); }}>
-      <section ref={dialog} className={`dialog ${overlay === 'preview' || overlay === 'observation' ? 'preview-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="dialog-title">
-        <div className="dialog-heading"><h2 id="dialog-title">{{ settings:'设置', windows:'选择目标窗口', preview:'截图预览', observation:'最近观察', delete:'删除对话' }[overlay]}</h2><IconButton title="关闭弹窗" onClick={() => setOverlay(null)}><X size={18} /></IconButton></div>
+      <section ref={dialog} className={`dialog ${overlay === 'preview' || overlay === 'observation' || overlay === 'guide' ? 'preview-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+        <div className="dialog-heading"><h2 id="dialog-title">{{ settings:'设置', windows:'选择目标窗口', preview:'截图预览', observation:'最近观察', delete:'删除对话', guide:'桌面指导' }[overlay]}</h2><IconButton title="关闭弹窗" onClick={() => setOverlay(null)}><X size={18} /></IconButton></div>
         {error && <div className="notice dialog-notice" role="alert">{error}</div>}
+        {overlay === 'guide' && <GuidePanel target={capture.bound ? capture.target : null} observation={observation} />}
         {overlay === 'windows' && <div className="dialog-body">
           {!targets && <div className="waiting"><LoaderCircle size={15} className="spin" /> 正在查找窗口</div>}
           {targets?.length === 0 && <p className="muted">当前没有可绑定的窗口。</p>}

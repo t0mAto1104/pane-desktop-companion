@@ -1,6 +1,6 @@
 {
   "name": "pane-desktop-companion",
-  "version": "2.1.1",
+  "version": "3.2.0",
   "productName": "Pane",
   "description": "Windows desktop window companion",
   "main": "dist/main/main.cjs",
@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:desktop": "node tests/desktop.mjs",
+    "test:desktop:guide": "node tests/ui-desktop.mjs",
     "dist:win": "npm run build && electron-builder --win nsis --x64"
   },
   "dependencies": {},

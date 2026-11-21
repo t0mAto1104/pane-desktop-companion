@@ -13,7 +13,15 @@ if ([PaneHotkey]::GetForegroundWindow() -ne $fixture) {
     $null = [PaneHotkey]::SetForegroundWindow($fixture)
     Start-Sleep -Milliseconds 150
 }
+if ([PaneHotkey]::GetForegroundWindow() -ne $fixture) {
+    # Windows may prevent a test launched from a background process from activating its own fixture.
+    [PaneHotkey]::keybd_event(18, 0, 0, [UIntPtr]::Zero)
+    try { $null = [PaneHotkey]::SetForegroundWindow($fixture) }
+    finally { [PaneHotkey]::keybd_event(18, 0, 2, [UIntPtr]::Zero) }
+    Start-Sleep -Milliseconds 150
+}
 if ([PaneHotkey]::GetForegroundWindow() -ne $fixture) { throw 'The dedicated fixture did not have foreground focus.' }
+if ($args[1] -eq 'focus-only') { return }
 try {
     foreach ($key in 17,16,32) { [PaneHotkey]::keybd_event($key, 0, 0, [UIntPtr]::Zero) }
 } finally {
