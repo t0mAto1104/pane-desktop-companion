@@ -128,6 +128,7 @@ try {
     win.setBounds({ ...bounds, x: there ? there.x + 30 : bounds.x + 110,
       y: there ? there.y + 35 : bounds.y + 35, width: bounds.width + 25 });
   });
+  await focusFixture();
   await waitOverlay(state => !!state && state.bounds.x !== marker.bounds.x);
   await terminal.evaluate(() => { document.getElementById('open-long').style.display = 'none'; });
   await waitOverlay(state => state === null);
