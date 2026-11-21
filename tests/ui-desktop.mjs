@@ -25,7 +25,7 @@ if (!packaged) await build({
 try {
   desktop = await driver.launch({
     executablePath: packaged ? resolve('release/win-unpacked/Pane.exe') : electron,
-    args: [...(packaged ? [] : [resolve('dist/ui-test/main.cjs')]), '--user-data-dir=' + join(profile, 'pane')],
+    args: [...(packaged ? [] : [resolve('dist/ui-test/main.cjs')]), '--show-main', '--user-data-dir=' + join(profile, 'pane')],
     env: { ...process.env, PANE_TEST_REQUEST_LOG: requestLog },
   });
   const app = await desktop.firstWindow();
@@ -151,7 +151,7 @@ try {
     assert.equal(await remoteCalls(), 1);
     await call('ui:clear');
 
-    await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.getTitle() !== 'Pane Overlay').show());
+    await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/index.html')).show());
     await app.getByRole('button', { name: '桌面指导' }).click();
     const panel = app.getByRole('dialog', { name: '桌面指导' });
     await panel.getByRole('button', { name: '打开窗口预览' }).click();

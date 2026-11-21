@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowUp, ChevronDown, ChevronRight, History, Image, Link2, LoaderCircle, MessageSquare, Minus,
+import { ArrowUp, Camera, Maximize2, ChevronDown, ChevronRight, History, Image, Link2, LoaderCircle, MessageSquare, Minus,
   Monitor, PanelLeft, Pause, Pin, Play, Plus, RefreshCw, ScanLine, Settings2, Square, Trash2, Unlink, X } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { AWARENESS_RANGES, type Account, type Actions, type CaptureState, type Conversation, type Message, type Model,
+import { AWARENESS_RANGES, COMPANION_SKINS, type CompanionSkin, type Account, type Actions, type CaptureState, type Conversation, type Message, type Model,
   type ObservationState, type ObservationUse, type Run, type Screenshot, type Settings, type Target, type VisualSource } from '../shared';
 import { GuidePanel } from './GuidePanel';
+import { Mascot, MascotImage } from './Mascot';
+import './companion.css';
 import './style.css';
 
 async function call<K extends keyof Actions>(name: K, ...args: Parameters<Actions[K]>): Promise<Awaited<ReturnType<Actions[K]>>> {
@@ -37,6 +39,7 @@ const visualLabels: Record<VisualSource, string> = {
 const localTime = (value: number) => new Date(value).toLocaleTimeString('zh-CN');
 
 function App() {
+  const [compact, setCompact] = useState(false);
   const [settings, setSettings] = useState<Settings>();
   const [account, setAccount] = useState<Account>();
   const [models, setModels] = useState<Model[]>([]);
@@ -67,13 +70,14 @@ function App() {
   const scroller = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLElement>(null);
   const activeRef = useRef<string | null>(null);
+  const settingsRef = useRef<Settings | undefined>(undefined);
   const providerRef = useRef<Settings['provider']>('chatgpt');
   const latestRun = useRef<Run | null>(null);
   const sendAttempt = useRef<AbortController | null>(null);
   const viewVersion = useRef(0);
   const focusComposer = () => requestAnimationFrame(() => input.current?.focus());
 
-  const apply = useCallback((value: Settings) => { providerRef.current = value.provider; setSettings(value); }, []);
+  const apply = useCallback((value: Settings) => { settingsRef.current = value; providerRef.current = value.provider; setSettings(value); }, []);
   const fail = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : '操作失败，请重试。'), []);
   const refreshAccount = useCallback(() => call('account:state').then(setAccount).catch(fail), [fail]);
   const refreshHistory = useCallback(() => call('chat:list').then(setHistory).catch(fail), [fail]);
@@ -90,10 +94,22 @@ function App() {
 
   useEffect(() => {
     let observed = false;
+    let shown = false;
     const subscriptions = [
       window.pane.subscribe('capture', setCapture),
       window.pane.subscribe('observation', state => { observed = true; setObservation(state); }),
-      window.pane.subscribe('shown', () => { setOverlay(value => value === 'guide' ? value : null); focusComposer(); }),
+      window.pane.subscribe('shown', surface => {
+        shown = true;
+        setCompact(surface.compact);
+        if (surface.panel === 'settings') {
+          setDenyDraft(settingsRef.current?.denied.join('\n') ?? '');
+          setError('');
+          setSaved(false);
+        }
+        setOverlay(value => surface.panel ?? (!surface.compact && value === 'guide' ? value : null));
+        focusComposer();
+      }),
+      window.pane.subscribe('settings', apply),
       window.pane.subscribe('account', () => { void refreshAccount(); }),
       window.pane.subscribe('chat', update => {
         setLastSent(update.run);
@@ -113,6 +129,7 @@ function App() {
     void call('snapshot').then(async state => {
       apply(state.settings);
       setCapture(state.capture);
+      if (!shown) setCompact(state.compact);
       if (!observed) setObservation(state.observation);
       setShortcut(state.shortcut);
       setRun(state.run);
@@ -189,7 +206,11 @@ function App() {
     clearError();
     try { apply(await call('settings:update', patch)); } catch (reason) { fail(reason); }
   }
+  function expand(panel?: 'settings' | 'guide') {
+    void call('companion:expand', panel).catch(fail);
+  }
   function showSettings() {
+    if (compact) { expand('settings'); return; }
     clearError();
     setDenyDraft(settings?.denied.join('\n') ?? '');
     setOverlay('settings');
@@ -266,7 +287,7 @@ function App() {
     setSending(true);
     const question = text;
     const shotId = textOnly ? null : capture.shot?.id ?? null;
-    const use = textOnly ? 'omit' : observationUse;
+    const use = compact || textOnly ? 'omit' : observationUse;
     try {
       let id = activeRef.current;
       if (!id) {
@@ -315,7 +336,8 @@ function App() {
   }
 
   const canObserve = settings?.screenAwarenessEnabled && capture.bound && observation.phase !== 'paused';
-  const plan = observationUse === 'image' ? (observation.phase === 'watching' ? visualLabels.observation : '等待有效观察截图')
+  const plan = compact ? (capture.shot ? visualLabels.manual : visualLabels.text)
+    : observationUse === 'image' ? (observation.phase === 'watching' ? visualLabels.observation : '等待有效观察截图')
     : capture.shot ? visualLabels.manual
     : observationUse === 'omit' || !canObserve ? visualLabels.text
     : observation.phase === 'watching' ? visualLabels.observation
@@ -326,18 +348,27 @@ function App() {
   const generating = run?.conversationId === active;
   const title = history.find(item => item.id === active)?.title ?? '新对话';
   const activeModel = models.find(item => item.id === model)?.name ?? model;
-  return <div className="desktop">
+  const skin = settings?.companionSkin ?? 'orbit';
+  return <div className={compact ? 'desktop companion-chat' : 'desktop'}>
     <header className="titlebar">
-      <div className="logo"><Mark /><strong>Pane</strong></div><span className="subtitle">桌面助手</span>
+      <div className="logo">{compact ? <MascotImage skin={skin} className="companion-avatar" /> : <Mark />}
+        <strong>{compact ? COMPANION_SKINS[skin] : 'Pane'}</strong></div>
+      {!compact && <span className="subtitle">桌面助手</span>}
       <div className="title-controls">
-        <IconButton title={settings?.pinned ? '取消置顶' : '保持置顶'} pressed={settings?.pinned} onClick={() => void change({ pinned: !settings?.pinned })}><Pin size={15} /></IconButton>
-        <span className="divider" />
-        <IconButton title="隐藏到托盘" onClick={() => void call('window:hide').catch(fail)}><Minus size={17} /></IconButton>
-        <IconButton title="关闭窗口（保留托盘）" onClick={() => void call('window:hide').catch(fail)}><X size={17} /></IconButton>
+        {compact ? <>
+          <IconButton title="新建对话" onClick={() => void newChat()}><Plus size={17} /></IconButton>
+          <IconButton title="展开主窗口" onClick={() => expand()}><Maximize2 size={15} /></IconButton>
+          <IconButton title="收起浮动聊天" onClick={() => void call('window:hide').catch(fail)}><X size={17} /></IconButton>
+        </> : <>
+          <IconButton title={settings?.pinned ? '取消置顶' : '保持置顶'} pressed={settings?.pinned} onClick={() => void change({ pinned: !settings?.pinned })}><Pin size={15} /></IconButton>
+          <span className="divider" />
+          <IconButton title="隐藏到托盘" onClick={() => void call('window:hide').catch(fail)}><Minus size={17} /></IconButton>
+          <IconButton title="关闭窗口（保留托盘）" onClick={() => void call('window:hide').catch(fail)}><X size={17} /></IconButton>
+        </>}
       </div>
     </header>
     <div className="workspace" inert={!!overlay}>
-      {sidebar && <aside className="sidebar">
+      {sidebar && !compact && <aside className="sidebar">
         <button className="new-chat" onClick={() => void newChat()}><Plus size={17} />新建对话</button>
         <div className="history-label"><History size={14} /> 对话历史</div>
         <nav className="history" aria-label="对话历史">
@@ -353,18 +384,23 @@ function App() {
       </aside>}
       <main>
         <div className="conversation-header">
-          <IconButton title={sidebar ? '隐藏侧栏' : '显示侧栏'} pressed={sidebar} onClick={() => setSidebar(!sidebar)}><PanelLeft size={17} /></IconButton>
+          {!compact && <IconButton title={sidebar ? '隐藏侧栏' : '显示侧栏'} pressed={sidebar} onClick={() => setSidebar(!sidebar)}><PanelLeft size={17} /></IconButton>}
           <span className="conversation-heading">{title}</span>
-          <button className="button guide-launch" onClick={() => { clearError(); setOverlay('guide'); }}>桌面指导</button>
+          <button className="button guide-launch" onClick={() => { if (compact) expand('guide'); else { clearError(); setOverlay('guide'); } }}>桌面指导</button>
           <button className="model-button" onClick={showSettings} title="配置连接和模型">
             <span className={`status-dot ${connected ? 'online' : ''}`}/><span>{connected && activeModel ? activeModel : '连接模型'}</span><ChevronDown size={14} />
           </button>
         </div>
         <div className="conversation-scroll" ref={scroller}>
           {!messages.length ? <div className="welcome">
-            <div className="welcome-art" aria-hidden="true"><ScanLine size={30} strokeWidth={1.55} /></div>
-            <h1>聊聊屏幕上的内容</h1>
-            <p>切换到任意应用后按 <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Space</kbd><br />预览窗口截图，随时提问。</p>
+            {compact ? <>
+              <MascotImage skin={skin} className="companion-welcome-art" />
+              <h1>有什么可以帮你？</h1>
+            </> : <>
+              <div className="welcome-art" aria-hidden="true"><ScanLine size={30} strokeWidth={1.55} /></div>
+              <h1>聊聊屏幕上的内容</h1>
+              <p>切换到任意应用后按 <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Space</kbd><br />预览窗口截图，随时提问。</p>
+            </>}
             {!connected && <button className="button welcome-connect" onClick={showSettings}>连接 ChatGPT <ChevronRight size={15} /></button>}
           </div> : <div className="message-list" aria-live="polite">
             {messages.map((item, index) => {
@@ -398,15 +434,20 @@ function App() {
             <button className={`context-button ${capture.target ? 'target-ready' : ''}`} onClick={() => void showWindows()} title="选择目标窗口">
               {capture.bound ? <Link2 size={15} /> : <Monitor size={15} />}<span>{capture.target?.title ?? '选择窗口'}</span><ChevronDown size={13} />
             </button>
-            {capture.target && <><IconButton title="刷新截图" disabled={capture.pending} onClick={refreshCapture}><RefreshCw className={capture.pending ? 'spin' : ''} size={15} /></IconButton>
+            {compact && <button className="context-button compact-capture" disabled={capture.pending}
+              onClick={() => capture.target ? refreshCapture() : void showWindows()}>
+              {capture.pending ? <LoaderCircle className="spin" size={15} /> : <Camera size={15} />}
+              <span>{capture.pending ? '截取中' : '截取窗口'}</span>
+            </button>}
+            {capture.target && <>{!compact && <IconButton title="刷新截图" disabled={capture.pending} onClick={refreshCapture}><RefreshCw className={capture.pending ? 'spin' : ''} size={15} /></IconButton>}
               {capture.bound && <IconButton title="解除绑定" onClick={() => void bind(null)}><Unlink size={15} /></IconButton>}</>}
-            <span className="context-status">{capture.pending ? '正在捕获' : capture.bound ? '已绑定' : capture.target ? '前台窗口' : ''}</span>
-            <button className="context-button awareness-switch" role="switch" aria-checked={!!settings?.screenAwarenessEnabled}
+            {!compact && <span className="context-status">{capture.pending ? '正在捕获' : capture.bound ? '已绑定' : capture.target ? '前台窗口' : ''}</span>}
+            {!compact && <button className="context-button awareness-switch" role="switch" aria-checked={!!settings?.screenAwarenessEnabled}
               onClick={() => { setObservationUse('auto'); void change({ screenAwarenessEnabled: !settings?.screenAwarenessEnabled }); }}>
               <ScanLine size={14} /><span>屏幕感知</span>
-            </button>
+            </button>}
           </div>
-          {settings?.screenAwarenessEnabled && <div className="observation-bar">
+          {!compact && settings?.screenAwarenessEnabled && <div className="observation-bar">
             <div className="observation-description">
               <span className={'status-dot' + (observing ? ' online' : '')} />
               <strong title={observation.target?.title}>{observation.target?.title ?? '请选择要观察的窗口'}</strong>
@@ -432,7 +473,7 @@ function App() {
               }} />
             <div className="composer-footer"><div className="composer-mode">
               <span className="visual-plan">本轮计划 · {plan}</span>
-              {(settings?.screenAwarenessEnabled || observationUse === 'image') && <label className="observe-attach">
+              {!compact && (settings?.screenAwarenessEnabled || observationUse === 'image') && <label className="observe-attach">
                 <input type="checkbox" disabled={sending} checked={observationUse !== 'omit'}
                   onChange={event => setObservationUse(event.target.checked ? 'auto' : 'omit')} />
                 {observationUse === 'image' ? '本条必须附上观察截图' : '发送时使用最新屏幕观察'}</label>}
@@ -496,6 +537,15 @@ function App() {
           </section>
           <section><h3>窗口与外观</h3>
             <label className="field">主题<select aria-label="主题" value={settings.theme} onChange={event => void change({ theme: event.target.value as Settings['theme'] })}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+            <label className="check-field"><input type="checkbox" checked={settings.companionEnabled}
+              onChange={event => void change({ companionEnabled: event.target.checked })} /> 显示浮动助手</label>
+            <div className="companion-setting">
+              <label className="field">助手外观<select aria-label="助手外观" value={settings.companionSkin}
+                onChange={event => void change({ companionSkin: event.target.value as CompanionSkin })}>
+                {Object.entries(COMPANION_SKINS).map(([value, name]) => <option key={value} value={value}>{name}</option>)}
+              </select></label>
+              <MascotImage skin={skin} />
+            </div>
             <label className="check-field"><input type="checkbox" checked={settings.pinned} onChange={event => void change({ pinned: event.target.checked })} /> 聊天窗口保持置顶</label>
             <label className="check-field"><input type="checkbox" checked={settings.autoCapture} onChange={event => void change({ autoCapture: event.target.checked })} /> 快捷键唤出时捕获目标窗口</label>
           </section>
@@ -524,4 +574,6 @@ function App() {
   </div>;
 }
 
-createRoot(document.getElementById('root')!).render(<App />);
+const mascot = window.location.hash === '#mascot';
+if (mascot) document.documentElement.classList.add('mascot-surface');
+createRoot(document.getElementById('root')!).render(mascot ? <Mascot /> : <App />);
