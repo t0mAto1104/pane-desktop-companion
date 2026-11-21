@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include "ui-automation.h"
+#include "text-selection.h"
 #include <dwmapi.h>
 #include <d3d11.h>
 #include <wincodec.h>
@@ -556,6 +557,24 @@ int wmain(int argc, wchar_t** argv) {
         std::vector<std::wstring> denied;
         for (int index = firstDenied; index < argc; ++index) denied.emplace_back(argv[index]);
 
+        if (command == L"selection-watch") {
+            init_apartment(apartment_type::multi_threaded);
+            watchSelection(assistant);
+            return 0;
+        }
+        if (command == L"selection") {
+            const auto hwnd = GetAncestor(GetForegroundWindow(), GA_ROOT);
+            const auto foregroundInfo = inspect(hwnd, assistant, denied);
+            if (!foregroundInfo) throw Failure("no_target");
+            const auto id = windowId(*foregroundInfo);
+            const auto current = verifyWindow(hwnd, id, assistant, denied, foregroundInfo->executable);
+            init_apartment(apartment_type::multi_threaded);
+            const auto data = selectedText(hwnd, physicalBounds(hwnd));
+            if (GetAncestor(GetForegroundWindow(), GA_ROOT) != hwnd) throw Failure("target_gone");
+            verifyWindow(hwnd, id, assistant, denied, current.executable);
+            printJson(L"{\"target\":" + json(current) + L",\"selection\":" + data + L"}");
+            return 0;
+        }
         if (command == L"credential" && argc == 4) { promptKey(reinterpret_cast<HWND>(static_cast<uintptr_t>(std::stoull(argv[3]))), assistant); } else if (command == L"foreground") {
             auto window = inspect(GetAncestor(GetForegroundWindow(), GA_ROOT), assistant, denied);
             if (!window) throw Failure("no_target");

@@ -1,7 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { Actions, Desktop, Events } from '../shared';
 
-const channelNames = new Set(['capture', 'observation', 'chat', 'guidance', 'account', 'shown', 'mascot', 'settings']);
+import type { SelectionBridge } from '../selection';
+
+const channelNames = new Set(['capture', 'observation', 'chat', 'guidance', 'account', 'shown', 'mascot', 'settings', 'interaction']);
 const api: Desktop = {
   call(name: keyof Actions, ...args: unknown[]) {
     return ipcRenderer.invoke('pane:call', name, args);
@@ -14,4 +16,15 @@ const api: Desktop = {
     return () => { ipcRenderer.removeListener(channel, wrapped); };
   },
 };
-contextBridge.exposeInMainWorld('pane', api);
+if (window.location.hash === '#selection') {
+  const selection: SelectionBridge = {
+    call: (name, ...args) => ipcRenderer.invoke('pane:selection', name, args),
+    subscribe(listener) {
+      const channel = 'pane:selection:view';
+      const wrapped = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state);
+      ipcRenderer.on(channel, wrapped);
+      return () => { ipcRenderer.removeListener(channel, wrapped); };
+    },
+  };
+  contextBridge.exposeInMainWorld('paneSelection', selection);
+} else contextBridge.exposeInMainWorld('pane', api);

@@ -11,6 +11,7 @@ export type CaptureResolution = TurnVisual | { source: 'unavailable'; reason: st
 
 type Input = {
   use: ObservationUse;
+  fresh?: boolean;
   manual: Screenshot | null;
   retry: TurnVisual | null;
   target: Target | null;
@@ -51,10 +52,11 @@ export class CaptureResolver {
     if (use === 'auto' && retry?.source === 'manual' && target && sameTarget(retry.shot.target, target)) {
       return this.validateManual(retry.shot, denied, signal);
     }
-    if (!target || !awareness || paused) {
+    if (!target || (!input.fresh && (!awareness || paused))) {
       return use === 'image' ? unavailable('当前没有可用的观察截图。请绑定窗口并恢复观察。') : text;
     }
 
+    if (input.fresh) return this.captureFresh(target, denied, signal);
     const state = await this.deps.observation(target, signal);
     signal.throwIfAborted();
     if (state.kind === 'confirmed') {
@@ -64,6 +66,10 @@ export class CaptureResolver {
     if (use === 'image') return unavailable('当前没有可用的观察截图。' + state.reason);
     if (state.kind === 'unavailable' && !state.allowInstant) return unavailable(state.reason);
 
+    return this.captureFresh(target, denied, signal);
+  }
+
+  private async captureFresh(target: Target, denied: string[], signal: AbortSignal): Promise<CaptureResolution> {
     try {
       // Native validates the full HWND/PID/start-time identity before and after this one capture.
       const shot = await this.deps.capture(target, denied, signal);

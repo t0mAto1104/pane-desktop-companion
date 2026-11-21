@@ -48,6 +48,15 @@ export class AI {
     }
     const current = input.at(-1)?.content;
     const question = Array.isArray(current) ? current.find(part => part.type === 'input_text')?.text : current;
+    if (question?.startsWith('回答问题\n')) {
+      const reference = JSON.parse(question.slice(question.indexOf('\n') + 1));
+      assert.match(reference.untrustedSelectedText, /margin requirement/);
+      assert.match(reference.sourceApplication, /^(chrome|msedge)\.exe$/i);
+      assert.equal(reference.question, '解释这个概念');
+      assert.equal(typeof current, 'string');
+      onDelta('这是选中术语的本地模拟解释。');
+      return '这是选中术语的本地模拟解释。';
+    }
     if (question?.startsWith('观察验收：')) {
       const images = input.flatMap(item => Array.isArray(item.content)
         ? item.content.flatMap(part => part.type === 'input_image' ? [part.image_url] : []) : []);

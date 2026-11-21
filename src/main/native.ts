@@ -2,6 +2,8 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child
 import { randomUUID } from 'node:crypto';
 import type { RegionCapture, ScreenRegion, Screenshot, Target, UiElement, WindowGeometry } from '../shared';
 
+import type { SelectionRead } from '../selection';
+
 export class UserError extends Error {}
 
 export class CaptureError extends UserError {
@@ -57,6 +59,27 @@ export class NativeBridge {
         reject(nativeDiagnostic(code, error.killed ? 'Windows 操作超时。请重试。'
           : error.code === 'ENOENT' ? '缺少 Windows 捕获组件。请重新安装应用。' : 'Windows 操作失败。请重试。', error.killed ? 'timeout' : 'native_failed'));
       });
+    });
+  }
+
+  async readSelection(denied: string[], signal: AbortSignal): Promise<SelectionRead> {
+    const result = await this.run('selection', denied, 1800, signal);
+    return JSON.parse(result.toString());
+  }
+
+  watchSelection(signal: AbortSignal, notify: (event: string) => void) {
+    const worker = spawn(this.path, ['selection-watch', String(process.pid)], {
+      windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], signal,
+    });
+    worker.on('error', () => {});
+    worker.stdout.setEncoding('utf8');
+    let pending = '';
+    worker.stdout.on('data', (text: string) => {
+      if (signal.aborted) return;
+      pending = (pending + text).slice(-4096);
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() ?? '';
+      for (const line of lines) if (['focus', 'click', 'drag', 'selection'].includes(line)) notify(line);
     });
   }
 
