@@ -1,4 +1,12 @@
-export type Events = { capture: CaptureState; observation: ObservationState; chat: Update; guidance: GuidanceState | null; account: Account; shown: WindowSurface; mascot: MascotState; settings: Settings };
+import type { SelectionLanguage } from './selection';
+
+export type SelectionOptions = { selectionEnabled: boolean; selectionAuto: boolean; selectionLanguage: SelectionLanguage };
+export function selectionOptions(input: Partial<SelectionOptions>): SelectionOptions {
+  return { selectionEnabled: input.selectionEnabled !== false, selectionAuto: input.selectionAuto === true,
+    selectionLanguage: input.selectionLanguage === 'en' ? 'en' : 'zh' };
+}
+
+export type Events = { interaction: string; capture: CaptureState; observation: ObservationState; chat: Update; guidance: GuidanceState | null; account: Account; shown: WindowSurface; mascot: MascotState; settings: Settings };
 export const COMPANION_SKINS = { orbit: '轨道机器人', fox: '灯笼狐', moss: '苔云' } as const;
 export type CompanionSkin = keyof typeof COMPANION_SKINS;
 export type MascotState = { skin: CompanionSkin; busy: boolean };
@@ -38,7 +46,7 @@ export function awarenessOptions(input: Partial<AwarenessOptions>): AwarenessOpt
   };
 }
 
-export type Settings = AwarenessOptions & CompanionOptions & { theme: Theme; pinned: boolean; autoCapture: boolean; denied: string[]; provider: Provider; models: Partial<Record<Provider, string>> };
+export type Settings = AwarenessOptions & CompanionOptions & SelectionOptions & { theme: Theme; pinned: boolean; autoCapture: boolean; denied: string[]; provider: Provider; models: Partial<Record<Provider, string>> };
 export type InputOrigin = 'typed' | 'selected-text' | 'voice' | 'screen';
 export interface InteractionContext {
   interactionId: string;
@@ -118,7 +126,7 @@ export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export interface Actions {
   snapshot(): Snapshot;
-  'settings:update'(settings: Partial<AwarenessOptions & CompanionOptions & Pick<Settings, 'theme' | 'pinned' | 'autoCapture' | 'denied' | 'provider'>>): Settings;
+  'settings:update'(settings: Partial<AwarenessOptions & CompanionOptions & SelectionOptions & Pick<Settings, 'theme' | 'pinned' | 'autoCapture' | 'denied' | 'provider'>>): Settings;
   'window:hide'(): void;
   'companion:appearance'(): MascotState;
   'companion:toggle'(): Promise<void>;

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, session, Tray, type Rectangle } from 'electron';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { awarenessOptions, companionOptions, type Actions, type CaptureState, type GuidanceState, type ObservationUse, type ScreenRegion, type Settings, type Target, type WindowSurface } from '../shared';
+import { awarenessOptions, companionOptions, selectionOptions, type Actions, type CaptureState, type GuidanceState, type ObservationUse, type ScreenRegion, type Settings, type Target, type WindowSurface } from '../shared';
 import { Store } from './store';
 import { NativeBridge, sameTarget, UserError } from './native';
 import { AI, diagnostic } from './ai';
@@ -21,6 +21,10 @@ import { fittedWindow } from './companion-geometry';
 import { InputSessionController } from './input-session';
 import { InputRouter } from './input-router';
 import { ownFrame, restrictSession } from './permission-manager';
+import { SelectionReader } from './selection-reader';
+import { SelectionToolbar } from './selection-toolbar';
+import { SelectionManager } from './selection-manager';
+import type { SelectionActions } from '../selection';
 
 const accelerator = 'Control+Shift+Space';
 const rendererFile = join(__dirname, '../renderer/index.html');
@@ -33,6 +37,7 @@ let toolScope = new AbortController();
 let win: BrowserWindow;
 let tray: Tray;
 let companion: CompanionWindow;
+let selection: SelectionManager;
 let compact = false;
 let normalBounds: Rectangle | undefined;
 let store: Store;
@@ -163,6 +168,7 @@ function syncCompanion() {
 
 function show(panel?: WindowSurface['panel']) {
   if (!win || win.isDestroyed() || desktopUnavailable()) return;
+  selection?.close();
   if (win.isMinimized()) win.restore();
   if (compact) {
     compact = false;
@@ -186,6 +192,7 @@ function hide() {
 }
 
 function showCompact(panel?: WindowSurface['panel']) {
+  selection?.close();
   if (win.isMinimized()) win.restore();
   if (!compact) normalBounds = win.getBounds();
   compact = true;
@@ -256,6 +263,7 @@ function saveSettings(next: Settings) {
   store.write('settings', settings);
   applySettings();
   if (!desktopUnavailable()) observations.configure(boundTarget(), settings, settings.denied);
+  selection?.configure();
   return settings;
 }
 
@@ -270,6 +278,11 @@ const input = new InputRouter({
   sessions: inputSessions, resolver, chat: () => chat, capture: () => capture, settings: () => settings,
   responseReady: provider => ai.assertResponseReady(provider),
   activeConversation: () => activeId, usableConversation: id => store.has(id),
+  createConversation: () => {
+    activeId = store.create().id;
+    send('interaction', activeId);
+    return activeId;
+  },
   unavailable: () => quitting || desktopUnavailable(), paused: () => observations.current.phase === 'paused',
   clearAttachment: id => {
     if (id !== null && capture.shot?.id === id) setCapture({ shot: null, error: undefined });
@@ -299,7 +312,9 @@ const actions: Actions = {
         next.changeThreshold !== settings.changeThreshold || next.maxObservations !== settings.maxObservations) {
       invalidateSend('屏幕观察设置已变更，请重新发送。');
     }
+    Object.assign(next, selectionOptions({ ...settings, ...patch }));
     if (patch.denied !== undefined) {
+      selection?.close();
       next.denied = denyList(patch.denied);
       cancelTools();
       invalidateSend('禁止捕获名单已变更，请重新发送。');
@@ -321,6 +336,7 @@ const actions: Actions = {
   'window:list': () => captureBridge.list(settings.denied),
   'capture:bind': async id => {
     if (desktopUnavailable()) throw new UserError('请先解锁 Windows 桌面。');
+    selection?.close();
     cancelTools();
     invalidateSend('目标窗口已切换，请重新发送。');
     if (id === null) {
@@ -531,9 +547,38 @@ function launch() {
   screen.on('display-added', displaysChanged);
   screen.on('display-removed', displaysChanged);
   ai = new AI(store, dataDir, account => send('account', account));
-  chat = new Chat(store, ai, update => { send('chat', update); syncCompanion(); });
+  const bar = new SelectionToolbar(rendererFile, join(__dirname, 'preload.cjs'), () => selection.close());
+  selection = new SelectionManager({
+    reader: new SelectionReader(captureBridge), toolbar: bar, settings: () => settings, bound: boundTarget,
+    blocked: () => quitting || desktopUnavailable() || !ready,
+    validate: (target, signal) => captureBridge.validate(target, settings.denied, signal),
+    submit: (target, text, request, signal) => {
+      const intent = { explain: '解释选区', translate: request.language === 'zh' ? '翻译成简体中文' : '翻译成英文',
+        term: '解释选区术语', ask: '回答问题' }[request.intent];
+      const content = intent + '\n' + JSON.stringify({ question: request.question?.trim() ?? '',
+        sourceApplication: target.executable, untrustedSelectedText: text });
+      return input.external('selected-text', content, target, request.screen, signal,
+        check => captureBridge.validate(target, settings.denied, check), text);
+    },
+    answer: run => {
+      const row = store.lastTurn(run.conversationId)[1];
+      return row && { text: row.text, error: row.error, done: row.status !== 'streaming' };
+    },
+    expand: () => show(),
+  });
+  ipcMain.handle('pane:selection', async (event, action: keyof SelectionActions, args: unknown[]) => {
+    if (!bar.accepts(event.senderFrame) || !Object.hasOwn(selection.actions, action) || !Array.isArray(args)) {
+      return { ok: false, error: '此操作不可用。' };
+    }
+    try {
+      const handler = selection.actions[action] as (...parameters: unknown[]) => unknown;
+      return { ok: true, value: await handler(...args) };
+    } catch (error) { return { ok: false, error: diagnostic(error) }; }
+  });
+  chat = new Chat(store, ai, update => { send('chat', update); selection.onChat(update); syncCompanion(); });
   observations.configure(null, settings, settings.denied);
   const pauseDesktop = () => {
+    selection.close();
     cancelTools();
     invalidateSend('Windows 桌面不可用，本轮发送已停止。');
     chat.stop();
@@ -543,9 +588,9 @@ function launch() {
     syncCompanion();
   };
   powerMonitor.on('lock-screen', () => { locked = true; pauseDesktop(); });
-  powerMonitor.on('unlock-screen', () => { locked = false; syncCompanion(); });
+  powerMonitor.on('unlock-screen', () => { locked = false; syncCompanion(); selection.configure(); });
   powerMonitor.on('suspend', () => { suspended = true; pauseDesktop(); });
-  powerMonitor.on('resume', () => { suspended = false; syncCompanion(); });
+  powerMonitor.on('resume', () => { suspended = false; syncCompanion(); selection.configure(); });
   ipcMain.handle('pane:call', async (event, action: keyof Actions, args: unknown[]) => {
     const frame = event.senderFrame;
     const fromMain = ownFrame(frame, win.webContents.mainFrame, expectedURL);
@@ -558,6 +603,7 @@ function launch() {
     } catch (error) { return { ok: false, error: diagnostic(error) }; }
   });
   applySettings();
+  globalShortcut.register('Control+Shift+Q', () => void selection.open(true));
   shortcut = globalShortcut.register(accelerator, () => void onHotkey());
 
   const icon = nativeImage.createFromPath(join(__dirname, '../renderer/pane.png')).resize({ width: 24, height: 24 });
@@ -568,6 +614,7 @@ function launch() {
 
   win.once('ready-to-show', () => {
     ready = true;
+    selection.configure();
     if (process.argv.includes('--show-main') || (!settings.companionEnabled && (!process.argv.includes('--hidden') || !shortcut))) show();
     else syncCompanion();
   });
@@ -580,7 +627,7 @@ app.setAppUserModelId('local.pane.desktop-companion');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => show());
-  app.on('before-quit', () => { quitting = true; companion?.savePosition(); cancelTools(); invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
+  app.on('before-quit', () => { quitting = true; selection?.close(); companion?.savePosition(); cancelTools(); invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
   app.on('will-quit', () => { globalShortcut.unregisterAll(); store?.close(); });
   app.whenReady().then(launch).catch(() => app.exit(1));
 }

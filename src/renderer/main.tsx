@@ -1,3 +1,4 @@
+import { SelectionToolbar } from './SelectionToolbar';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowUp, Camera, Maximize2, ChevronDown, ChevronRight, History, Image, Link2, LoaderCircle, MessageSquare, Minus,
@@ -114,6 +115,10 @@ function App() {
         focusComposer();
       }),
       window.pane.subscribe('settings', apply),
+      window.pane.subscribe('interaction', id => {
+        void openChat(id, false).catch(fail);
+        void refreshHistory();
+      }),
       window.pane.subscribe('guidance', state => { guideEvent = true; setGuide(state); }),
       window.pane.subscribe('account', state => { accountEvent = true; setAccount(state); }),
       window.pane.subscribe('chat', update => {
@@ -575,6 +580,15 @@ function App() {
             <label className="check-field"><input type="checkbox" checked={settings.pinned} onChange={event => void change({ pinned: event.target.checked })} /> 聊天窗口保持置顶</label>
             <label className="check-field"><input type="checkbox" checked={settings.autoCapture} onChange={event => void change({ autoCapture: event.target.checked })} /> 快捷键唤出时捕获目标窗口</label>
           </section>
+          <section><h3>全局划词</h3>
+            <label className="check-field"><input type="checkbox" checked={settings.selectionEnabled}
+              onChange={event => void change({ selectionEnabled: event.currentTarget.checked })} />允许 Ctrl+Shift+Q 读取选区</label>
+            <label className="check-field"><input type="checkbox" disabled={!settings.selectionEnabled} checked={settings.selectionAuto}
+              onChange={event => void change({ selectionAuto: event.currentTarget.checked })} />选中文字后自动显示工具栏</label>
+            <label>翻译目标 <select value={settings.selectionLanguage}
+              onChange={event => void change({ selectionLanguage: event.currentTarget.value === 'en' ? 'en' : 'zh' })}>
+              <option value="zh">简体中文</option><option value="en">英文</option></select></label>
+          </section>
           <section><h3>屏幕感知</h3>
             <label className="check-field"><input type="checkbox" checked={settings.screenAwarenessEnabled}
               onChange={event => { setObservationUse('auto'); void change({ screenAwarenessEnabled: event.target.checked }); }} /> 观察用户绑定的窗口</label>
@@ -602,4 +616,4 @@ function App() {
 
 const mascot = window.location.hash === '#mascot';
 if (mascot) document.documentElement.classList.add('mascot-surface');
-createRoot(document.getElementById('root')!).render(mascot ? <Mascot /> : <App />);
+createRoot(document.getElementById('root')!).render(window.location.hash === '#selection' ? <SelectionToolbar /> : mascot ? <Mascot /> : <App />);

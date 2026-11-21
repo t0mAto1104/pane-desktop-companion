@@ -1,6 +1,6 @@
 {
   "name": "pane-desktop-companion",
-  "version": "3.4.1",
+  "version": "3.5.0",
   "productName": "Pane",
   "description": "Windows desktop window companion",
   "main": "dist/main/main.cjs",
@@ -20,6 +20,7 @@
     "test:desktop:guide": "node tests/ui-desktop.mjs",
     "test:desktop:companion": "node tests/companion-desktop.mjs",
     "test:desktop:account": "node tests/account-desktop.mjs",
+    "test:desktop:selection": "node tests/selection-desktop.mjs",
     "dist:win": "npm run build && electron-builder --win nsis --x64"
   },
   "dependencies": {},

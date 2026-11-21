@@ -1,9 +1,9 @@
-import type { CaptureState, ObservationUse, SendResult, Settings } from '../shared';
+import type { CaptureState, ObservationUse, Run, SendResult, Settings, Target } from '../shared';
 import type { Chat } from './chat';
 import type { CaptureResolver } from './capture-resolver';
 import type { InputSessionController } from './input-session';
 import { interactionContext } from './interaction-context';
-import { UserError } from './native';
+import { sameTarget, UserError } from './native';
 
 type Dependencies = {
   sessions: InputSessionController;
@@ -13,6 +13,7 @@ type Dependencies = {
   settings: () => Settings;
   responseReady: (provider: Settings['provider']) => void;
   activeConversation: () => string | null;
+  createConversation: () => string;
   usableConversation: (id: string) => boolean;
   unavailable: () => boolean;
   paused: () => boolean;
@@ -25,6 +26,36 @@ export class InputRouter {
   assertIdle() {
     if (this.deps.chat().run) throw new UserError('请先等待或停止当前回答。');
     this.deps.sessions.assertIdle();
+  }
+
+  async external(origin: 'selected-text' | 'voice', text: string, target: Target | null, attach: boolean,
+                 ownSignal: AbortSignal, validate: (signal: AbortSignal) => Promise<void>, selectedText?: string): Promise<Run> {
+    const d = this.deps;
+    this.assertIdle();
+    if (d.unavailable()) throw new UserError('Windows 桌面不可用。');
+    const id = d.activeConversation();
+    const context = { ...interactionContext(origin, id, target, text), selectedText };
+    const current = d.settings();
+    if (!current.models[current.provider]) throw new UserError('请先在 Pane 设置中连接账户并选择模型。');
+    d.responseReady(current.provider);
+    const bound = d.capture();
+    if (attach && (!target || !bound.bound || !bound.target || !sameTarget(target, bound.target))) {
+      throw new UserError('截图授权仅适用于同一绑定窗口。');
+    }
+    return d.sessions.prepare(id, async pending => {
+      const signal = AbortSignal.any([pending, ownSignal]);
+      signal.throwIfAborted();
+      await validate(signal);
+      const visual = await d.resolver.resolve({
+        use: attach ? 'image' : 'omit', fresh: attach, target, manual: null, retry: null,
+        awareness: false, paused: false, desktopUnavailable: d.unavailable(), denied: current.denied, signal,
+      });
+      signal.throwIfAborted();
+      if (d.unavailable() || d.activeConversation() !== id) throw new UserError('当前窗口或对话已变更。');
+      if (visual.source === 'unavailable') throw new UserError(visual.reason);
+      const conversation = id && d.usableConversation(id) ? id : d.createConversation();
+      return d.chat().start(conversation, context.text!, visual, d.settings(), false);
+    });
   }
 
   async send(id: string, text: string, shotId: string | null, retry: boolean, use: ObservationUse = 'omit'): Promise<SendResult> {

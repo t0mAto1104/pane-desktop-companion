@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import { awarenessOptions, companionOptions, type Conversation, type Message, type Settings } from '../shared';
+import { awarenessOptions, companionOptions, selectionOptions, type Conversation, type Message, type Settings } from '../shared';
 
 const defaults: Settings = {
   ...awarenessOptions({}),
   ...companionOptions({}),
+  ...selectionOptions({}),
   theme: 'system', pinned: true, autoCapture: true, denied: ['CredentialUIBroker.exe', 'LogonUI.exe', 'KeePass.exe', 'KeePassXC.exe', '1Password.exe'], models: {}, provider: 'chatgpt',
 };
 
@@ -48,7 +49,7 @@ export class Store {
 
   settings(): Settings {
     const saved = this.read<Partial<Settings>>('settings') ?? {};
-    return { ...defaults, ...saved, ...awarenessOptions(saved), ...companionOptions(saved) };
+    return { ...defaults, ...saved, ...awarenessOptions(saved), ...companionOptions(saved), ...selectionOptions(saved) };
   }
 
   list(): Conversation[] {
