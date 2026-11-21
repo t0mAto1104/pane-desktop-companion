@@ -1,7 +1,7 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, session, Tray, type Rectangle } from 'electron';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { awarenessOptions, companionOptions, type Actions, type CaptureState, type GuidanceState, type ObservationUse, type ScreenRegion, type SendResult, type Settings, type Target, type WindowSurface } from '../shared';
+import { awarenessOptions, companionOptions, type Actions, type CaptureState, type GuidanceState, type ObservationUse, type ScreenRegion, type Settings, type Target, type WindowSurface } from '../shared';
 import { Store } from './store';
 import { NativeBridge, sameTarget, UserError } from './native';
 import { AI, diagnostic } from './ai';
@@ -18,6 +18,9 @@ import { CaptureResolver, deniedTarget } from './capture-resolver';
 
 import { CompanionWindow } from './companion';
 import { fittedWindow } from './companion-geometry';
+import { InputSessionController } from './input-session';
+import { InputRouter } from './input-router';
+import { ownFrame, restrictSession } from './permission-manager';
 
 const accelerator = 'Control+Shift+Space';
 const rendererFile = join(__dirname, '../renderer/index.html');
@@ -52,7 +55,7 @@ const location = new LocationEngine(detector, readEvidence,
 const guidance = new GuidanceEngine(detector, readEvidence,
   (instructions, data, image, signal) => queryDesktop(ai, settings, instructions, data, image, signal),
   publishGuidance);
-let pendingSend: { id: string; controller: AbortController } | undefined;
+const inputSessions = new InputSessionController();
 let captureJob: AbortController | undefined;
 let locked = false;
 let suspended = false;
@@ -91,7 +94,7 @@ function setCapture(next: Partial<CaptureState>) {
 function desktopUnavailable() { return locked || suspended; }
 
 function invalidateSend(message: string) {
-  pendingSend?.controller.abort(new UserError(message));
+  inputSessions.cancel(message);
 }
 
 function supersedeCapture() {
@@ -174,7 +177,10 @@ function show(panel?: WindowSurface['panel']) {
 }
 
 function hide() {
-  cancelCapture(true);
+  if (inputSessions.pending) {
+    supersedeCapture();
+    if (capture.pending) setCapture({ pending: false });
+  } else cancelCapture(true);
   win.hide();
   syncCompanion();
 }
@@ -253,12 +259,6 @@ function saveSettings(next: Settings) {
   return settings;
 }
 
-function selectedShot(id: string | null) {
-  if (id === null) return null;
-  if (capture.shot?.id !== id) throw new UserError('截图已更新或清除，请重新选择要发送的截图。');
-  return capture.shot;
-}
-
 function denyList(input: unknown) {
   if (!Array.isArray(input) || input.length > 100 || input.some(item => typeof item !== 'string' || item.length > 160 || !/^[^<>:"/\\|?*\x00-\x1f]+\.exe$/i.test(item))) {
     throw new UserError('每行填写一个 .exe 文件名，最多 100 项。');
@@ -266,43 +266,19 @@ function denyList(input: unknown) {
   return [...new Map(input.map((item: string) => [item.toLowerCase(), item])).values()];
 }
 
-function assertIdle() {
-  if (chat.run || pendingSend) throw new UserError('请先等待或停止当前回答。');
-}
-
-async function beginChat(id: string, text: string, shotId: string | null, retry: boolean, use: ObservationUse = 'omit'): Promise<SendResult> {
-  assertIdle();
-  if (id !== activeId) throw new UserError('请先打开此对话。');
-  if (typeof text !== 'string' || text.length > 20_000) throw new UserError('每条消息最多 20,000 个字符。');
-  if (use !== 'auto' && use !== 'omit' && use !== 'image') throw new UserError('屏幕上下文选项无效。');
-  ai.assertResponseReady(settings.provider);
-  const selected = use === 'image' ? null : selectedShot(shotId);
-  const bound = boundTarget();
-  const request = { id, controller: new AbortController() };
-  pendingSend = request;
-  const { signal } = request.controller;
-  try {
-    const visual = await resolver.resolve({
-      use, manual: selected, retry: retry ? chat.retryVisual(id) : null,
-      target: bound ?? capture.target, awareness: !!bound && settings.screenAwarenessEnabled,
-      paused: observations.current.phase === 'paused', desktopUnavailable: desktopUnavailable(), denied: settings.denied, signal,
-    });
-    signal.throwIfAborted();
-    if (quitting || activeId !== id || !store.has(id)) throw new UserError('对话已切换，请重新发送。');
-    if (visual.source === 'unavailable') return { kind: 'confirm-text', reason: visual.reason };
-    if (visual.source === 'manual' && selected && capture.shot?.id !== selected.id) {
-      throw new UserError('手动附件已更新，请确认当前截图后重新发送。');
-    }
-    const run = chat.start(id, text.trim(), visual, settings, retry);
+const input = new InputRouter({
+  sessions: inputSessions, resolver, chat: () => chat, capture: () => capture, settings: () => settings,
+  responseReady: provider => ai.assertResponseReady(provider),
+  activeConversation: () => activeId, usableConversation: id => store.has(id),
+  unavailable: () => quitting || desktopUnavailable(), paused: () => observations.current.phase === 'paused',
+  clearAttachment: id => {
+    if (id !== null && capture.shot?.id === id) setCapture({ shot: null, error: undefined });
+    else if (id === null && capture.error) setCapture({ error: undefined });
     syncCompanion();
-    // Clear only the exact attachment that was used, without cancelling a newer capture.
-    if (visual.source === 'manual' && capture.shot?.id === visual.shot.id) setCapture({ shot: null, error: undefined });
-    else if (visual.source === 'text' && use === 'omit' && capture.error) setCapture({ error: undefined });
-    return { kind: 'started', run };
-  } finally {
-    if (pendingSend === request) pendingSend = undefined;
-  }
-}
+  },
+});
+
+function assertIdle() { input.assertIdle(); }
 
 const actions: Actions = {
   snapshot: () => ({ settings, conversationId: activeId, capture, observation: observations.current, run: chat.run, shortcut, compact }),
@@ -497,13 +473,13 @@ const actions: Actions = {
   },
   'chat:delete': id => {
     if (chat.run?.conversationId === id) throw new UserError('请先停止此对话的生成。');
-    if (pendingSend?.id === id) invalidateSend('该对话已删除。');
+    if (inputSessions.conversationId === id) invalidateSend('该对话已删除。');
     store.remove(id);
     chat.deleteImages(id);
     if (activeId === id) activeId = null;
   },
-  'chat:send': (id, text, shotId, use) => beginChat(id, text, shotId, false, use),
-  'chat:retry': (id, shotId, use) => beginChat(id, '', shotId, true, use),
+  'chat:send': (id, text, shotId, use) => input.send(id, text, shotId, false, use),
+  'chat:retry': (id, shotId, use) => input.send(id, '', shotId, true, use),
   'chat:stop': () => { invalidateSend('已停止准备本轮请求。'); chat.stop(); },
 };
 
@@ -529,9 +505,7 @@ function launch() {
 
   for (const key of ['OPENAI_CUSTOM_HEADERS', 'OPENAI_LOG']) delete process.env[key];
 
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
-  session.defaultSession.on('will-download', event => event.preventDefault());
+  restrictSession(session.defaultSession);
   win = new BrowserWindow({
     width: 940, height: 690, minWidth: 570, minHeight: 490,
     frame: false, show: false, backgroundColor: '#f7f7f8',
@@ -574,7 +548,7 @@ function launch() {
   powerMonitor.on('resume', () => { suspended = false; syncCompanion(); });
   ipcMain.handle('pane:call', async (event, action: keyof Actions, args: unknown[]) => {
     const frame = event.senderFrame;
-    const fromMain = frame && frame === win.webContents.mainFrame && frame.url === expectedURL;
+    const fromMain = ownFrame(frame, win.webContents.mainFrame, expectedURL);
     const fromMascot = frame && companion.accepts(frame) &&
       (action === 'companion:appearance' || action === 'companion:toggle');
     if ((!fromMain && !fromMascot) || !Object.hasOwn(actions, action) || !Array.isArray(args)) return { ok: false, error: '此操作不可用。' };

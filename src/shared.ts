@@ -39,6 +39,17 @@ export function awarenessOptions(input: Partial<AwarenessOptions>): AwarenessOpt
 }
 
 export type Settings = AwarenessOptions & CompanionOptions & { theme: Theme; pinned: boolean; autoCapture: boolean; denied: string[]; provider: Provider; models: Partial<Record<Provider, string>> };
+export type InputOrigin = 'typed' | 'selected-text' | 'voice' | 'screen';
+export interface InteractionContext {
+  interactionId: string;
+  origin: InputOrigin;
+  conversationId: string | null;
+  targetId: string | null;
+  createdAt: number;
+  text?: string;
+  selectedText?: string;
+  screenshotId?: string;
+}
 export type Target = { id: string; title: string; executable: string };
 export type Screenshot = { id: string; target: Target; image: string; capturedAt: number };
 export type CaptureState = { target: Target | null; bound: boolean; pending: boolean; shot: Screenshot | null; error?: string };
