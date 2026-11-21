@@ -558,7 +558,7 @@ int wmain(int argc, wchar_t** argv) {
         std::vector<std::wstring> denied;
         for (int index = firstDenied; index < argc; ++index) denied.emplace_back(argv[index]);
 
-        if (command == L"audio-list" || command == L"audio-record" || command == L"audio-play") {
+        if (command == L"audio-list" || command == L"audio-record" || command == L"audio-play" || command == L"audio-preview") {
             try {
                 if (!activeDesktop()) throw Failure("desktop_locked");
                 init_apartment(apartment_type::multi_threaded);
@@ -567,7 +567,7 @@ int wmain(int argc, wchar_t** argv) {
                     const std::wstring device = argc > 3 ? argv[3] : L"";
                     if (device.size() > 512) throw Failure("audio_device");
                     if (command == L"audio-record") recordAudio(device);
-                    else { _setmode(_fileno(stdin), _O_BINARY); playAudio(device); }
+                    else { _setmode(_fileno(stdin), _O_BINARY); playAudio(device, command == L"audio-preview"); }
                 }
                 return 0;
             } catch (...) {

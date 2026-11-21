@@ -26,6 +26,7 @@ import { SelectionToolbar } from './selection-toolbar';
 import { SelectionManager } from './selection-manager';
 import type { SelectionActions } from '../selection';
 import { VoiceManager } from './voice-manager';
+import { VoiceModel } from './voice-model';
 import { voiceSettings } from '../voice';
 
 const accelerator = 'Control+Shift+Space';
@@ -33,6 +34,8 @@ const rendererFile = join(__dirname, '../renderer/index.html');
 const expectedURL = pathToFileURL(rendererFile).href;
 const executable = app.isPackaged ? join(process.resourcesPath, 'native/window-capture.exe') : join(__dirname, '../../native/bin/window-capture.exe');
 const captureBridge = new NativeBridge(executable);
+const whisperExecutable = app.isPackaged ? join(process.resourcesPath, 'native/whisper/whisper-cli.exe')
+  : join(__dirname, '../../native/bin/whisper/whisper-cli.exe');
 const detector = new ElementDetector((target, denied, signal) => captureBridge.inspectAutomation(target, denied, signal));
 let toolScope = new AbortController();
 
@@ -41,6 +44,7 @@ let tray: Tray;
 let companion: CompanionWindow;
 let selection: SelectionManager;
 let voice: VoiceManager;
+let voiceModel: VoiceModel;
 let compact = false;
 let normalBounds: Rectangle | undefined;
 let store: Store;
@@ -299,6 +303,12 @@ const input = new InputRouter({
 
 function assertIdle() { input.assertIdle(); }
 
+function requireVoiceWindow() {
+  if (!ready || quitting || desktopUnavailable() || credentialPrompt || !win.isVisible() || !win.isFocused()) {
+    throw new UserError('请先打开并聚焦 Pane 聊天窗口。');
+  }
+}
+
 const actions: Actions = {
   snapshot: () => ({ settings, conversationId: activeId, capture, observation: observations.current, run: chat.run, shortcut, compact }),
   'settings:update': patch => {
@@ -338,13 +348,19 @@ const actions: Actions = {
     if (desktopUnavailable()) throw new UserError('请先解锁 Windows 桌面。');
     return voice.list();
   },
+  'voice:modelStatus': () => voiceModel.status(),
+  'voice:modelDownload': () => { requireVoiceWindow(); return voiceModel.install(); },
+  'voice:modelCancel': () => voiceModel.cancel(),
   'voice:start': () => {
     assertIdle();
-    if (!ready || quitting || desktopUnavailable() || credentialPrompt || !win.isVisible() || !win.isFocused()) {
-      throw new UserError('请在 Pane 对话框内开始录音。');
-    }
+    requireVoiceWindow();
     selection.close();
     return voice.start(settings);
+  },
+  'voice:testMic': () => {
+    requireVoiceWindow();
+    selection.close();
+    return voice.testMicrophone(settings);
   },
   'voice:finish': () => voice.stopRecording(),
   'voice:cancel': () => voice.cancel(),
@@ -606,8 +622,14 @@ function launch() {
       return { ok: true, value: await handler(...args) };
     } catch (error) { return { ok: false, error: diagnostic(error) }; }
   });
-  voice = new VoiceManager(executable,
-    state => { send('voice', state); selection.configure(); },
+  voiceModel = new VoiceModel(join(dataDir, 'voice-models'), state => send('voice:model', state));
+  let wasVoiceBusy = false;
+  voice = new VoiceManager(executable, whisperExecutable, () => voiceModel.requirePath(),
+    state => {
+      send('voice', state);
+      const busy = state.phase !== 'ready';
+      if (wasVoiceBusy !== busy) { wasVoiceBusy = busy; selection.configure(); }
+    },
     run => !quitting && !desktopUnavailable() && win.isVisible() && activeId === run.conversationId,
     run => store.lastTurn(run.conversationId)[1],
   );
@@ -666,7 +688,7 @@ app.setAppUserModelId('local.pane.desktop-companion');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => show());
-  app.on('before-quit', () => { quitting = true; selection?.close(); voice?.cancel(); companion?.savePosition(); cancelTools(); invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
+  app.on('before-quit', () => { quitting = true; selection?.close(); voice?.cancel(); voiceModel?.cancel(); companion?.savePosition(); cancelTools(); invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
   app.on('will-quit', () => { globalShortcut.unregisterAll(); store?.close(); });
   app.whenReady().then(launch).catch(() => app.exit(1));
 }

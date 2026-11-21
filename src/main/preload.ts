@@ -3,7 +3,7 @@ import type { Actions, Desktop, Events } from '../shared';
 
 import type { SelectionBridge } from '../selection';
 
-const channelNames = new Set(['capture', 'observation', 'chat', 'guidance', 'account', 'shown', 'mascot', 'settings', 'interaction', 'voice']);
+const channelNames = new Set(['capture', 'observation', 'chat', 'guidance', 'account', 'shown', 'mascot', 'settings', 'interaction', 'voice', 'voice:model']);
 const api: Desktop = {
   call(name: keyof Actions, ...args: unknown[]) {
     return ipcRenderer.invoke('pane:call', name, args);

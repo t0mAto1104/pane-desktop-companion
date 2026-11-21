@@ -20,6 +20,8 @@ try {
     plugins: [{ name: 'voice-test', setup(build) {
       build.onResolve({ filter: /^\.\/ai$/ }, () => ({ path: resolve('tests/ai-fixture.ts') }));
       build.onResolve({ filter: /^\.\/voice-device$/ }, () => ({ path: resolve('tests/voice-device-fixture.ts') }));
+      build.onResolve({ filter: /^\.\/voice-model$/ }, () => ({ path: resolve('tests/voice-model-fixture.ts') }));
+      build.onResolve({ filter: /^\.\/whisper$/ }, () => ({ path: resolve('tests/whisper-fixture.ts') }));
     } }],
   });
   desktop = await driver.launch({
@@ -39,11 +41,21 @@ try {
   const state = await app.evaluate(() => window.pane.call('snapshot'));
   assert.equal(state.value.settings.voiceInputId, 'mic-2');
   assert.equal(state.value.settings.voiceOutputId, 'speaker-2');
+  await button('试录并回放').click();
+  await app.getByText('可以说话，试录约 4 秒', { exact: true }).waitFor();
+  await app.getByLabel('麦克风输入音量').waitFor();
+  assert.equal(await app.getByLabel('麦克风输入音量').evaluate(meter => meter.value), 0.66);
+  await app.getByText('试录回放完成。', { exact: true }).waitFor();
+  assert.equal((await readFile(requests, 'utf8').catch(() => '')).length, 0);
+  await button('下载离线 Whisper 模型（约 190 MB）').click();
+  await app.getByLabel('离线模型下载进度').waitFor();
+  await app.getByText('本地 Whisper 模型已就绪', { exact: true }).waitFor();
   await app.keyboard.press('Escape');
 
   const composer = app.locator('.composer');
   await composer.getByRole('button', { name: '语音提问' }).click();
   await button('结束录音').waitFor();
+  await composer.getByText('可以说话 · 正在录音', { exact: true }).waitFor();
   assert.equal(desktop.windows().filter(win => win.url().endsWith('#voice')).length, 0);
   await button('结束录音').click();
   await app.waitForFunction(() => document.querySelector('.composer textarea').value === '这是语音转写测试');
@@ -53,7 +65,7 @@ try {
   await app.getByText('上轮实际来源 · 仅文字').waitFor();
   for (let i = 0; i < 60 && !(await readFile(logs, 'utf8')).includes('speak:speaker-2'); i++) await sleep(60);
   assert.deepEqual((await readFile(logs, 'utf8')).trim().split('\n'),
-    ['record:mic-2', 'transcribe:en', 'speak:speaker-2']);
+    ['record:mic-2', 'preview:speaker-2', 'record:mic-2', 'transcribe:en', 'speak:speaker-2']);
   assert.equal((await readFile(requests, 'utf8')).trim().split('\n').length, 1);
   assert.equal((await app.evaluate(() => window.pane.call('chat:list'))).value.length, 1);
 
@@ -64,7 +76,7 @@ try {
   assert.equal(await draft.inputValue(), '');
   assert.match(await readFile(logs, 'utf8'), /record:mic-2\ncancel\n$/);
   assert.equal((await readFile(requests, 'utf8')).trim().split('\n').length, 1);
-  console.log('Inline voice, independent device routing, draft review and suspend cancellation passed (mock audio).');
+  console.log('Input meter, microphone preview, model setup, inline Whisper draft, explicit send and suspend cancellation passed (mock audio).');
 } finally {
   await desktop?.close();
   if (dirname(profile) === temp && profile.startsWith(join(temp, 'pane-voice-'))) {

@@ -16,7 +16,7 @@
 namespace {
 constexpr unsigned inputRate = 16000;
 constexpr unsigned outputRate = 22050;
-constexpr unsigned limitSeconds = 11;
+constexpr unsigned limitSeconds = 24;
 constexpr size_t outputLimit = outputRate * 2 * 90;
 using winrt::com_ptr;
 using winrt::check_hresult;
@@ -113,30 +113,35 @@ void recordAudio(const std::wstring& id) {
     com_ptr<IAudioCaptureClient> capture;
     check_hresult(audio->GetService(IID_PPV_ARGS(capture.put())));
     const size_t limit = inputRate * limitSeconds * 2;
-    std::vector<BYTE> result;
-    result.reserve(limit);
-    {
-        Running running(audio.get());
-        const auto start = GetTickCount64();
-        while (!stopRequested() && result.size() < limit && GetTickCount64() - start < limitSeconds * 1000) {
-            UINT32 packet{};
-            check_hresult(capture->GetNextPacketSize(&packet));
-            if (!packet) { Sleep(12); continue; }
-            BYTE* data{};
-            UINT32 frames{};
-            DWORD flags{};
-            check_hresult(capture->GetBuffer(&data, &frames, &flags, nullptr, nullptr));
-            const auto size = std::min(static_cast<size_t>(frames) * 2, limit - result.size());
-            if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) || !data) result.insert(result.end(), size, 0);
-            else result.insert(result.end(), data, data + size);
-            check_hresult(capture->ReleaseBuffer(frames));
+    const std::vector<BYTE> silence(limit, 0);
+    size_t total = 0;
+    Running running(audio.get());
+    const auto started = GetTickCount64();
+    auto end = started + limitSeconds * 1000;
+    bool stopping = false;
+    while (total < limit && GetTickCount64() < end) {
+        if (!stopping && stopRequested()) {
+            // Drain the last part of the utterance after the stop button is clicked.
+            stopping = true;
+            end = std::min(end, GetTickCount64() + 150);
         }
+        UINT32 packet{};
+        check_hresult(capture->GetNextPacketSize(&packet));
+        if (!packet) { Sleep(10); continue; }
+        BYTE* data{};
+        UINT32 frames{};
+        DWORD flags{};
+        check_hresult(capture->GetBuffer(&data, &frames, &flags, nullptr, nullptr));
+        const auto size = std::min(static_cast<size_t>(frames) * 2, limit - total);
+        const auto* samples = (flags & AUDCLNT_BUFFERFLAGS_SILENT) || !data ? silence.data() : data;
+        const auto written = std::fwrite(samples, 1, size, stdout);
+        check_hresult(capture->ReleaseBuffer(frames));
+        if (written != size || std::fflush(stdout) != 0) throw std::runtime_error("audio_write");
+        total += size;
     }
-    if (!result.empty() && std::fwrite(result.data(), 1, result.size(), stdout) != result.size())
-        throw std::runtime_error("audio_write");
 }
 
-void playAudio(const std::wstring& id) {
+void playAudio(const std::wstring& id, bool microphonePreview) {
     std::vector<BYTE> pcm;
     BYTE chunk[8192];
     for (size_t n; (n = std::fread(chunk, 1, sizeof(chunk), stdin)) != 0;) {
@@ -144,7 +149,7 @@ void playAudio(const std::wstring& id) {
         pcm.insert(pcm.end(), chunk, chunk + n);
     }
     if (pcm.empty() || pcm.size() % 2 != 0) throw std::runtime_error("audio_format");
-    auto audio = open(eRender, id, outputRate);
+    auto audio = open(eRender, id, microphonePreview ? inputRate : outputRate);
     com_ptr<IAudioRenderClient> render;
     check_hresult(audio->GetService(IID_PPV_ARGS(render.put())));
     UINT32 capacity{};

@@ -1,6 +1,7 @@
 import { SelectionToolbar } from './SelectionToolbar';
 import { VoiceDeviceSettings } from './VoiceDeviceSettings';
-import type { VoicePhase } from '../voice';
+import type { VoiceState } from '../voice';
+import { VoiceMeter } from './VoiceMeter';
 import { Mic } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -63,7 +64,8 @@ function App() {
   const [lastSent, setLastSent] = useState<Run | null>(null);
   const [shortcut, setShortcut] = useState(true);
   const [text, setText] = useState('');
-  const [voicePhase, setVoicePhase] = useState<VoicePhase>('ready');
+  const [voice, setVoice] = useState<VoiceState>({ phase: 'ready' });
+  const voicePhase = voice.phase;
   const [voiceDraft, setVoiceDraft] = useState(false);
   const [error, setError] = useState('');
   const [overlay, setOverlay] = useState<'settings' | 'windows' | 'preview' | 'observation' | 'delete' | 'guide' | null>(null);
@@ -120,7 +122,7 @@ function App() {
         focusComposer();
       }),
       window.pane.subscribe('settings', apply),
-      window.pane.subscribe('voice', state => { setVoicePhase(state.phase); if (state.error) fail(new Error(state.error)); }),
+      window.pane.subscribe('voice', state => { setVoice(state); if (state.error) fail(new Error(state.error)); }),
       window.pane.subscribe('interaction', id => {
         void openChat(id, false).catch(fail);
         void refreshHistory();
@@ -325,8 +327,9 @@ function App() {
     } catch (reason) { fail(reason); }
   }
 
-  const voiceEditing = voicePhase === 'recording' || voicePhase === 'transcribing';
-  const voiceLabel = { ready: '语音提问', recording: '结束录音', transcribing: '取消转写', speaking: '停止朗读' }[voicePhase];
+  const voiceEditing = voicePhase === 'starting' || voicePhase === 'recording' || voicePhase === 'transcribing';
+  const voiceLabel = { ready: '语音提问', starting: '取消录音', recording: '结束录音', transcribing: '取消转写',
+    previewing: '停止试录', speaking: '停止朗读' }[voicePhase];
 
   async function submit(retry = false, textOnly = false) {
     if (sendAttempt.current || run || voiceEditing || (!retry && !text.trim() && (!capture.shot || textOnly))) return;
@@ -524,8 +527,13 @@ function App() {
               }} />
             <div className="composer-footer"><div className="composer-mode">
               <span className="visual-plan">本轮计划 · {voiceDraft ? '仅文字（语音转写）' : plan}</span>
-              {voicePhase !== 'ready' && <small className="voice-progress" role="status">
-                {{ recording: '正在录音', transcribing: '正在转写', speaking: '正在朗读' }[voicePhase]}</small>}
+              {voicePhase !== 'ready' && !voice.testing && <span className="voice-level-row">
+                <small className="voice-progress" role="status">
+                  {{ starting: '正在连接麦克风…', recording: '可以说话 · 正在录音',
+                    transcribing: '正在本地转写…', speaking: '正在朗读', previewing: '' }[voicePhase]}
+                </small>
+                <VoiceMeter state={voice} />
+              </span>}
               {!compact && !voiceDraft && (settings?.screenAwarenessEnabled || observationUse === 'image') && <label className="observe-attach">
                 <input type="checkbox" disabled={sending} checked={observationUse !== 'omit'}
                   onChange={event => setObservationUse(event.target.checked ? 'auto' : 'omit')} />
@@ -533,9 +541,9 @@ function App() {
             </div>
               <div className="composer-actions">
                 <button type="button" className="compose-mic" title={voiceLabel} aria-label={voiceLabel}
-                  aria-pressed={voicePhase !== 'ready'} disabled={voicePhase === 'ready' && (!!run || sending)}
+                  aria-pressed={voicePhase !== 'ready'} disabled={voice.testing || (voicePhase === 'ready' && (!!run || sending))}
                   onClick={() => void toggleVoice()}>
-                  {voicePhase === 'transcribing' ? <LoaderCircle size={16} className="spin" /> :
+                  {(voicePhase === 'starting' || voicePhase === 'transcribing') ? <LoaderCircle size={16} className="spin" /> :
                     voicePhase === 'ready' ? <Mic size={17} /> : <Square size={13} fill="currentColor" />}
                 </button>
               {run || sending ? <button className="send stop" title={run ? '停止生成' : '停止准备'}
@@ -623,7 +631,7 @@ function App() {
               onChange={event => void change({ selectionLanguage: event.currentTarget.value === 'en' ? 'en' : 'zh' })}>
               <option value="zh">简体中文</option><option value="en">英文</option></select></label>
           </section>
-          <VoiceDeviceSettings settings={settings} update={patch => void change(patch)} />
+          <VoiceDeviceSettings settings={settings} update={patch => void change(patch)} voice={voice} />
           <section><h3>屏幕感知</h3>
             <label className="check-field"><input type="checkbox" checked={settings.screenAwarenessEnabled}
               onChange={event => { setObservationUse('auto'); void change({ screenAwarenessEnabled: event.target.checked }); }} /> 观察用户绑定的窗口</label>

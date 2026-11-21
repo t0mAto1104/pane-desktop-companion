@@ -231,3 +231,10 @@ main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .compose-mic[aria-pressed="true"] { background: var(--wash); color: var(--accent); }
 .compose-mic:disabled { opacity: .45; }
 .voice-progress { color: var(--accent); font-size: 11px; }
+
+.voice-level-row { display: inline-flex; align-items: center; gap: 6px; }
+.voice-meter { width: 54px; height: 8px; }
+.voice-meter::-webkit-meter-bar { background: var(--hover); border: 0; border-radius: 5px; }
+.voice-meter::-webkit-meter-optimum-value { background: var(--accent); border-radius: 5px; }
+.voice-mic-test, .voice-model { display: grid; gap: 7px; }
+.voice-model progress { width: 110px; accent-color: var(--accent); }

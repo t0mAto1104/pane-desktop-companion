@@ -1,7 +1,9 @@
 import type { Run, Update } from '../shared';
 import type { VoiceSettings, VoiceState } from '../voice';
 import { UserError } from './native';
-import { captureWindows, listWindowsAudio, speakOnWindows, transcribeWindows } from './voice-device';
+import { captureWindows, listWindowsAudio, playWindowsAudio, speakOnWindows } from './voice-device';
+import { inspectMicClip } from './voice-pcm';
+import { transcribeWithWhisper } from './whisper';
 
 type Reply = { text: string; status: string };
 
@@ -14,6 +16,8 @@ export class VoiceManager {
 
   constructor(
     private readonly executable: string,
+    private readonly whisper: string,
+    private readonly requireModel: () => Promise<string>,
     private readonly publish: (state: VoiceState) => void,
     private readonly canPlay: (run: Run) => boolean,
     private readonly readReply: (run: Run) => Reply | undefined,
@@ -26,24 +30,50 @@ export class VoiceManager {
     return listWindowsAudio(this.executable, AbortSignal.timeout(5000));
   }
 
-  async start(settings: VoiceSettings) {
+  start(settings: VoiceSettings) { return this.record(settings, false); }
+
+  testMicrophone(settings: VoiceSettings) { return this.record(settings, true); }
+
+  private async record(settings: VoiceSettings, testing: boolean): Promise<string> {
     if (this.audio) throw new UserError('请先结束当前语音操作。');
     const operation = new AbortController();
     this.audio = operation;
-    this.publish({ phase: 'recording' });
+    this.publish({ phase: 'starting', testing });
+    let stopTest: ReturnType<typeof setTimeout> | undefined;
     try {
-      this.recording = captureWindows(this.executable, settings.voiceInputId, operation.signal);
+      const model = testing ? '' : await this.requireModel();
+      operation.signal.throwIfAborted();
+      this.recording = captureWindows(this.executable, settings.voiceInputId, operation.signal, level => {
+        if (this.audio !== operation) return;
+        this.publish({ phase: 'recording', testing, level });
+        if (testing && !stopTest) stopTest = setTimeout(() => {
+          if (this.audio === operation) this.recording?.finish();
+        }, 4500);
+      });
       const pcm = await this.recording.result;
       operation.signal.throwIfAborted();
       this.recording = undefined;
+      clearTimeout(stopTest);
+      const clip = inspectMicClip(pcm);
+      if (clip.state === 'short') throw new UserError('录音太短。看到「可以说话」后再说，结束时稍等片刻。');
+      if (clip.state === 'silent') throw new UserError('麦克风几乎没有输入信号。请检查静音键，或在语音设置里换一个麦克风。');
+      if (testing) {
+        this.publish({ phase: 'previewing', testing });
+        await playWindowsAudio(this.executable, settings.voiceOutputId, pcm, operation.signal, true);
+        return clip.state === 'quiet' ? '录音音量偏低。请提高麦克风输入音量，或靠近麦克风再试。' : '试录回放完成。';
+      }
+      if (clip.state === 'quiet') throw new UserError('录音音量过低。请提高麦克风输入音量，也可以先在语音设置试录回放。');
       this.publish({ phase: 'transcribing' });
-      const text = await transcribeWindows(pcm, settings.voiceLanguage, operation.signal);
+      const text = await transcribeWithWhisper(this.whisper, model, pcm, settings.voiceLanguage, operation.signal);
       operation.signal.throwIfAborted();
       return text;
     } catch (error) {
       if (operation.signal.aborted) return '';
       throw error;
-    } finally { this.finishOperation(operation); }
+    } finally {
+      clearTimeout(stopTest);
+      this.finishOperation(operation);
+    }
   }
 
   stopRecording() { this.recording?.finish(); }
