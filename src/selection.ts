@@ -9,13 +9,14 @@ export type SelectionRead = {
     { status: 'unsupported' | 'empty' | 'protected' | 'limit' | 'changed' };
 };
 export type SelectionView = {
-  text: string; source: string; notice?: string; canImport: boolean; canAttach: boolean; details?: boolean;
+  text: string; source: string; notice?: string; canImport: boolean; canAttach: boolean; automatic?: boolean; badge?: boolean; details?: boolean;
   language: SelectionLanguage; theme: Theme; answer: string; busy: boolean; conversation: boolean;
 };
 export interface SelectionActions {
   state(): SelectionView;
   import(): Promise<void>;
   submit(request: SelectionRequest): Promise<void>;
+  reveal(): void;
   details(open: boolean): void;
   expand(): void;
   close(): void;

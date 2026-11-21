@@ -1,4 +1,5 @@
 import type { SelectionLanguage } from './selection';
+import type { VoiceDevice, VoiceModelState, VoiceSettings, VoiceState } from './voice';
 
 export type SelectionOptions = { selectionEnabled: boolean; selectionAuto: boolean; selectionLanguage: SelectionLanguage };
 export function selectionOptions(input: Partial<SelectionOptions>): SelectionOptions {
@@ -6,7 +7,7 @@ export function selectionOptions(input: Partial<SelectionOptions>): SelectionOpt
     selectionLanguage: input.selectionLanguage === 'en' ? 'en' : 'zh' };
 }
 
-export type Events = { interaction: string; capture: CaptureState; observation: ObservationState; chat: Update; guidance: GuidanceState | null; account: Account; shown: WindowSurface; mascot: MascotState; settings: Settings };
+export type Events = { voice: VoiceState; 'voice:model': VoiceModelState; interaction: string; capture: CaptureState; observation: ObservationState; chat: Update; guidance: GuidanceState | null; account: Account; shown: WindowSurface; mascot: MascotState; settings: Settings };
 export const COMPANION_SKINS = { orbit: '轨道机器人', fox: '灯笼狐', moss: '苔云' } as const;
 export type CompanionSkin = keyof typeof COMPANION_SKINS;
 export type MascotState = { skin: CompanionSkin; busy: boolean };
@@ -46,7 +47,7 @@ export function awarenessOptions(input: Partial<AwarenessOptions>): AwarenessOpt
   };
 }
 
-export type Settings = AwarenessOptions & CompanionOptions & SelectionOptions & { theme: Theme; pinned: boolean; autoCapture: boolean; denied: string[]; provider: Provider; models: Partial<Record<Provider, string>> };
+export type Settings = AwarenessOptions & CompanionOptions & SelectionOptions & VoiceSettings & { theme: Theme; pinned: boolean; autoCapture: boolean; denied: string[]; provider: Provider; models: Partial<Record<Provider, string>> };
 export type InputOrigin = 'typed' | 'selected-text' | 'voice' | 'screen';
 export interface InteractionContext {
   interactionId: string;
@@ -126,9 +127,17 @@ export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export interface Actions {
   snapshot(): Snapshot;
-  'settings:update'(settings: Partial<AwarenessOptions & CompanionOptions & SelectionOptions & Pick<Settings, 'theme' | 'pinned' | 'autoCapture' | 'denied' | 'provider'>>): Settings;
+  'settings:update'(settings: Partial<AwarenessOptions & CompanionOptions & SelectionOptions & VoiceSettings & Pick<Settings, 'theme' | 'pinned' | 'autoCapture' | 'denied' | 'provider'>>): Settings;
   'window:hide'(): void;
-  'voice:open'(): void;
+  'voice:devices'(): Promise<VoiceDevice[]>;
+  'voice:modelStatus'(): Promise<VoiceModelState>;
+  'voice:modelDownload'(): Promise<void>;
+  'voice:modelCancel'(): void;
+  'voice:start'(): Promise<string>;
+  'voice:testMic'(): Promise<string>;
+  'voice:finish'(): void;
+  'voice:cancel'(): void;
+  'chat:sendVoice'(id: string, text: string): Promise<SendResult>;
   'companion:appearance'(): MascotState;
   'companion:toggle'(): Promise<void>;
   'companion:expand'(panel?: WindowSurface['panel']): void;

@@ -28,7 +28,7 @@ export class InputRouter {
     this.deps.sessions.assertIdle();
   }
 
-  async external(origin: 'selected-text' | 'voice', text: string, target: Target | null, attach: boolean,
+  async external(origin: 'selected-text', text: string, target: Target | null, attach: boolean,
                  ownSignal: AbortSignal, validate: (signal: AbortSignal) => Promise<void>, selectedText?: string): Promise<Run> {
     const d = this.deps;
     this.assertIdle();
@@ -58,7 +58,7 @@ export class InputRouter {
     });
   }
 
-  async send(id: string, text: string, shotId: string | null, retry: boolean, use: ObservationUse = 'omit'): Promise<SendResult> {
+  async send(id: string, text: string, shotId: string | null, retry: boolean, use: ObservationUse = 'omit', voice = false): Promise<SendResult> {
     const d = this.deps;
     this.assertIdle();
     if (id !== d.activeConversation()) throw new UserError('请先打开此对话。');
@@ -67,7 +67,7 @@ export class InputRouter {
     const { target, bound, shot } = d.capture();
     const manual = use === 'image' || shotId === null ? null : shot;
     if (use !== 'image' && shotId !== null && shot?.id !== shotId) throw new UserError('截图已更新或清除，请重新选择要发送的截图。');
-    const context = interactionContext(text.trim() ? 'typed' : 'screen', id, target, text.trim(), manual);
+    const context = interactionContext(voice ? 'voice' : text.trim() ? 'typed' : 'screen', id, target, text.trim(), manual);
     const settings = d.settings();
     d.responseReady(settings.provider);
     return d.sessions.prepare(id, async signal => {
@@ -84,7 +84,7 @@ export class InputRouter {
       if (manual && d.capture().shot?.id !== context.screenshotId) throw new UserError('手动附件已更新，请确认当前截图后重新发送。');
       const run = d.chat().start(id, context.text!, visual, d.settings(), retry);
       if (manual) d.clearAttachment(manual.id);
-      else if (visual.source === 'text' && use === 'omit') d.clearAttachment(null);
+      else if (!voice && visual.source === 'text' && use === 'omit') d.clearAttachment(null);
       return { kind: 'started', run };
     });
   }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -30,8 +30,16 @@ try {
       build.onResolve({ filter: /^\.\/ai$/ }, () => ({ path: resolve('tests/ai-fixture.ts') }));
     } }],
   });
+  // Keep the installed Pane instance free to use its normal global shortcuts.
+  const fixtureEntry = resolve('dist/selection-test/qa-entry.cjs');
+  await writeFile(fixtureEntry, `
+    const { globalShortcut } = require('electron');
+    const register = globalShortcut.register.bind(globalShortcut);
+    globalShortcut.register = (key, callback) => register(key === 'Control+Shift+Q' ? 'Control+Shift+F11' : key, callback);
+    require('./main.cjs');
+  `);
   desktop = await _electron.launch({ executablePath: electron,
-    args: [resolve('dist/selection-test/main.cjs'), '--user-data-dir=' + join(profiles, 'pane'), '--show-main'],
+    args: [fixtureEntry, '--user-data-dir=' + join(profiles, 'pane'), '--show-main'],
     env: { ...process.env, PANE_TEST_REQUEST_LOG: log } });
   const app = await desktop.firstWindow();
   const call = (name, ...args) => app.evaluate(([key, ...params]) => window.pane.call(key, ...params), [name, ...args]);
@@ -83,7 +91,7 @@ try {
   console.log('Native selection with mixed-language multiline selection in', win.executable,
     'in', Math.round(Number(process.hrtime.bigint() - sampleStarted) / 1e6), 'ms');
   assert.equal((await readFile(log, 'utf8').catch(() => '')).length, 0);
-  await hotkey('selection');
+  await hotkey('selection-test');
   let toolbar;
   for (let attempt = 0; attempt < 45; attempt++) {
     toolbar = desktop.windows().find(item => item.url().endsWith('#selection'));
@@ -106,7 +114,19 @@ try {
   await page.locator('#password').evaluate(input => input.select());
   const protectedSelection = await native('selection', String(process.pid));
   assert.equal(protectedSelection.selection.status, 'protected');
-  await call('settings:update', { selectionAuto: true });
+  await desktop.evaluate(({ BrowserWindow }) => {
+    const chat = BrowserWindow.getAllWindows().find(win => win.webContents.getURL().endsWith('index.html'));
+    chat.show();
+    chat.focus();
+  });
+  await app.locator('.settings-trigger').click();
+  const toggle = app.getByLabel('开启自动划词');
+  assert.equal(await toggle.isChecked(), false);
+  await toggle.check();
+  await app.getByLabel('主题').selectOption('dark');
+  await app.waitForFunction(async () => (await window.pane.call('snapshot')).value.settings.selectionAuto);
+  await app.keyboard.press('Escape');
+  await call('window:hide');
   await focusContent('#sample');
   await page.locator('#sample').evaluate(node => {
     const range = document.createRange();
@@ -120,7 +140,56 @@ try {
   }
   assert.ok(toolbar && !toolbar.isClosed(), 'opt-in UIA selection events open the toolbar without a shortcut');
   assert.equal((await readFile(log, 'utf8')).trim().split('\n').length, 1);
-  await toolbar.getByRole('button', { name: '问 AI' }).waitFor();
+  const badge = toolbar.getByRole('button', { name: '划词操作' });
+  await badge.waitFor();
+  assert.equal(await toolbar.getByRole('button', { name: '问 AI' }).count(), 0);
+  const visualSize = await badge.boundingBox();
+  assert.ok(visualSize && visualSize.width <= 32 && visualSize.height <= 32, JSON.stringify(visualSize));
+  const automatic = await native('selection', String(process.pid));
+  assert.equal(automatic.selection.status, 'ok');
+  const edge = automatic.selection.rectangles.at(-1);
+  const { anchor, bounds } = await desktop.evaluate(({ BrowserWindow, screen }, rect) => ({
+    anchor: screen.screenToDipPoint({ x: rect.x + rect.width, y: rect.y + rect.height }),
+    bounds: BrowserWindow.getAllWindows().find(win => win.webContents.getURL().endsWith('#selection')).getBounds(),
+  }), edge);
+  assert.ok(bounds.x > anchor.x && bounds.y > anchor.y, JSON.stringify({ anchor, bounds }));
+
+  await badge.hover();
+  const action = toolbar.getByRole('button', { name: '问 AI' });
+  await action.waitFor();
+  const contrast = await action.evaluate(button => {
+    const toolbar = button.closest('.selection-toolbar');
+    const luminance = color => {
+      const values = color.match(/[0-9.]+/g).slice(0, 3).map(channel => {
+        const value = Number(channel) / 255;
+        return value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4;
+      });
+      return values[0] * .2126 + values[1] * .7152 + values[2] * .0722;
+    };
+    const foreground = luminance(getComputedStyle(button).color);
+    const background = luminance(getComputedStyle(toolbar).backgroundColor);
+    return { theme: document.documentElement.dataset.theme, ratio: (foreground + .05) / (background + .05) };
+  });
+  assert.equal(contrast.theme, 'dark');
+  assert.ok(contrast.ratio >= 4.5, JSON.stringify(contrast));
+  await toolbar.evaluate(() => document.querySelector('.selection-toolbar')
+    .dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: null })));
+  await toolbar.waitForEvent('close', { timeout: 3000 }).catch(error => { if (!toolbar.isClosed()) throw error; });
+  await sleep(425);
+  assert.equal(desktop.windows().some(item => item.url().endsWith('#selection') && !item.isClosed()), false);
+  await page.locator('#sample').evaluate(node => {
+    const range = document.createRange();
+    range.setStart(node.firstChild, 7); range.setEnd(node.firstChild, 18);
+    const current = getSelection(); current.removeAllRanges(); current.addRange(range);
+  });
+  toolbar = undefined;
+  for (let attempt = 0; attempt < 45; attempt++) {
+    toolbar = desktop.windows().find(item => item.url().endsWith('#selection') && !item.isClosed());
+    if (toolbar) break;
+    await sleep(100);
+  }
+  assert.ok(toolbar, 'a new selection shows the badge again');
+  await toolbar.getByRole('button', { name: '划词操作' }).waitFor();
   await desktop.evaluate(({ powerMonitor }) => powerMonitor.emit('lock-screen'));
   await toolbar.waitForEvent('close', { timeout: 3000 }).catch(error => { if (!toolbar.isClosed()) throw error; });
   console.log('Protected field, explicit network submission and existing Chat persistence verified in',

@@ -51,7 +51,11 @@ Pane 是一个本地运行的 Windows 桌面助手。点击浮动角色即可问
 
 ## 全局划词
 
-选中文字后按 **Ctrl+Shift+Q**，或在设置中开启自动划词。可翻译、解释或直接向 Pane 提问。选区识别不调用 AI。 [实现与接口](docs/global-text-selection.md)
+在设置中开启自动划词，选中文字后悬停小图标即可翻译、解释或直接提问。也可使用 **Ctrl+Shift+Q**。选区识别不调用 AI。 [实现与接口](docs/global-text-selection.md)
+
+## 语音提问
+
+在「设置 → 语音」下载本地 Whisper 模型，也可以先试录并回放。点击聊天框麦克风，等到录音就绪后说话。转写在本机完成，确认后再发送文字。[使用说明](docs/voice-mode.md)
 
 ## 桌面指导
 
@@ -73,6 +77,7 @@ Pane 是一个本地运行的 Windows 桌面助手。点击浮动角色即可问
 ```powershell
 npm ci --legacy-peer-deps
 npm run build:native
+npm run build:whisper
 npm run dev
 ```
 

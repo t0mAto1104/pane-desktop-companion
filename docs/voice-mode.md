@@ -1,9 +1,18 @@
-# Pane Voice Mode 预览
+# Pane 本地语音提问
 
-从聊天窗口点麦克风图标打开语音面板。选择 Windows 已安装的听写语言，点 **使用麦克风**，说一句话。可以修改本地转写，再点击 **发送文字**。勾选 **朗读回答** 时，Pane 用本机语音在回答完成后朗读。语音面板与原有 Pane 共用当前对话和模型。
+首次使用请在 **设置 → 语音** 下载多语言 Whisper 模型（约 190 MB）。模型下载后保存在 Pane 用户目录，转写可断网运行，无需 API Key。可以选自动识别、中文或英语听写。中英交替提问可选自动识别。Pane 会在长停顿处分段判断语言，同一句中快速切换语言时仍可能漏掉部分术语。
 
-听写和朗读通过 Windows System.Speech 完成。语音功能沿用已有 ChatGPT 或 API Key 连接，不需要单独申请音频 API Key。Pane 只在用户点击后打开默认麦克风，单次工作进程上限 14 秒。不会上传麦克风音频或附加截图。发送后，文字按现有聊天历史规则存储。关闭、失去焦点时停止当前录音；锁屏、休眠、关闭及退出停止相关音频资源。已提交的回答仍可在 Chat 查看，除非全局桌面锁屏等现有策略取消。
+从完整聊天或浮动助手打开的迷你聊天中点击麦克风，等「可以说话」出现再说。录音时可查看实时输入音量，单次最多 24 秒。结束录音后，转写填入输入框，可编辑后再发送。这一步才使用当前 Chat 连接提交确认后的文字。回答可通过现有 Windows 语音在选定输出设备上朗读。
 
-语音窗只暴露 `window.paneVoice`，包括 `state`、`listen`、`stopAudio`、`send`、`speak`、`close`。主进程验证窗口主 frame 和 URI，使用 `InputRouter.external` 提交明确确认的转写。语音数据通过标准输入传给固定脚本，不能被当作命令执行。朗读过滤代码块并限制到 4000 个字符。
+在 **设置 → 语音** 可以选择麦克风和朗读设备，或点击 **试录并回放**。试录约 4 秒，通过选定输出设备播放。Pane 会区分录音太短、没有输入信号、输入音量偏低，以及录到声音但转写为空。试录不需要识别模型，录音和回放都只保留在内存。隐藏窗口、锁屏或休眠会取消正在进行的语音操作。
 
-首版按轮次听写和朗读，依赖 Windows 已安装的本地识别语言及输出设备。低延迟实时双向语音与打断属于后续阶段。
+## 实现
+
+- WASAPI 原生进程流式返回 16 kHz 单声道 PCM，只有主进程接收音频。渲染进程只收到状态和音量。
+- 主进程以标准输入管道把 WAV 送给本地 whisper.cpp，并配合 Silero 语音活动检测，减少静音和背景声造成的误转写。音频不写盘，不上传。朗读继续使用 Windows System.Speech。
+- `voice:testMic` 试录并回放，`voice:start` 生成聊天草稿，`voice:finish` 结束录音，`voice:cancel` 取消语音操作。`voice:modelStatus`、`voice:modelDownload`、`voice:modelCancel` 管理模型，下载仅由用户点击触发。
+- 构建通过 `npm run build:whisper` 准备固定版本的 [whisper.cpp b5454](https://github.com/ggml-org/whisper.cpp/releases/tag/b5454) 和 [Silero VAD](https://huggingface.co/ggml-org/whisper-vad)。安装包自带 Windows x64 运行组件，量化 [多语言模型](https://huggingface.co/ggerganov/whisper.cpp) 单独下载并校验 SHA-256。
+
+本地转写速度取决于 CPU、录音长度和环境音。同一模型对不同口音、噪声和专业术语的准确率会有差异。
+
+Windows 上可以用 `node tests/whisper-desktop.mjs <模型路径>` 验证原生转写。测试使用 Windows 合成的普通话、英语和分段混合样本，需要已安装相应的合成语音。

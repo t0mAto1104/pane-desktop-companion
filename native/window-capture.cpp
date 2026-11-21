@@ -3,6 +3,7 @@
 #include <windows.h>
 #include "ui-automation.h"
 #include "text-selection.h"
+#include "voice-audio.h"
 #include <dwmapi.h>
 #include <d3d11.h>
 #include <wincodec.h>
@@ -557,6 +558,22 @@ int wmain(int argc, wchar_t** argv) {
         std::vector<std::wstring> denied;
         for (int index = firstDenied; index < argc; ++index) denied.emplace_back(argv[index]);
 
+        if (command == L"audio-list" || command == L"audio-record" || command == L"audio-play" || command == L"audio-preview") {
+            try {
+                if (!activeDesktop()) throw Failure("desktop_locked");
+                init_apartment(apartment_type::multi_threaded);
+                if (command == L"audio-list") printJson(audioDevices());
+                else {
+                    const std::wstring device = argc > 3 ? argv[3] : L"";
+                    if (device.size() > 512) throw Failure("audio_device");
+                    if (command == L"audio-record") recordAudio(device);
+                    else { _setmode(_fileno(stdin), _O_BINARY); playAudio(device, command == L"audio-preview"); }
+                }
+                return 0;
+            } catch (...) {
+                throw Failure("audio_device");
+            }
+        }
         if (command == L"selection-watch") {
             init_apartment(apartment_type::multi_threaded);
             watchSelection(assistant);

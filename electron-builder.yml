@@ -11,6 +11,7 @@ files:
   - '!dist/**/*.map'
 extraResources:
   - { from: native/bin/window-capture.exe, to: native/window-capture.exe }
+  - { from: native/bin/whisper, to: native/whisper }
   - { from: vendor/siwc/LICENSE, to: licenses/siwc-LICENSE.txt }
   - { from: vendor/siwc/THIRD_PARTY_NOTICES.md, to: licenses/siwc-THIRD-PARTY-NOTICES.md }
   - { from: vendor/siwc/UPSTREAM.md, to: licenses/siwc-UPSTREAM.md }

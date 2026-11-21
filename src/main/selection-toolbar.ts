@@ -36,13 +36,13 @@ export class SelectionToolbar {
       return { ...start, width: Math.max(1, end.x - start.x), height: Math.max(1, end.y - start.y) };
     });
     const anchor = this.rectangles.at(-1);
-    this.pointer = anchor ? { x: anchor.x, y: anchor.y } : screen.getCursorScreenPoint();
-    const bounds = this.placement(!!(view.notice || view.answer || view.details));
+    this.pointer = anchor ? { x: anchor.x + anchor.width - 1, y: anchor.y + anchor.height - 1 } : screen.getCursorScreenPoint();
+    const bounds = this.placement(view);
     if (!bounds) return false;
     let win = this.win;
     if (!win || win.isDestroyed()) {
       win = new BrowserWindow({
-        ...bounds, frame: false, show: false, resizable: false, alwaysOnTop: true, skipTaskbar: true,
+        ...bounds, frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: false, show: false, resizable: false, alwaysOnTop: true, skipTaskbar: true,
         title: 'Pane 划词', webPreferences: { preload: this.preload, sandbox: true, contextIsolation: true, nodeIntegration: false },
       });
       this.win = win;
@@ -68,15 +68,16 @@ export class SelectionToolbar {
 
   update(view: SelectionView) {
     if (!this.win || this.win.isDestroyed()) return;
-    const bounds = this.placement(!!(view.notice || view.answer || view.details));
+    const bounds = this.placement(view);
     if (bounds) this.win.setBounds(bounds);
     this.win.webContents.send('pane:selection:view', view);
   }
 
-  private placement(tall: boolean) {
+  private placement(view: SelectionView) {
     if (!this.pointer) return null;
     const work = screen.getDisplayNearestPoint(this.pointer).workArea;
-    return selectionPosition(work, this.pointer, this.rectangles, tall);
+    const surface = view.badge ? 'badge' : view.notice || view.answer || view.details ? 'card' : 'compact';
+    return selectionPosition(work, this.pointer, this.rectangles, surface);
   }
 
   close() {

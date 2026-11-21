@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { clipboard, screen } from 'electron';
 import type { Run, Settings, Target, Update } from '../shared';
 import { selectionText, type SelectionActions, type SelectionRequest, type SelectionView } from '../selection';
@@ -29,6 +30,7 @@ export class SelectionManager {
   private sending?: AbortController;
   private timer?: ReturnType<typeof setTimeout>;
   private lastQuery = 0;
+  private lastSelection = '';
 
   constructor(private readonly deps: Dependencies) {}
 
@@ -47,6 +49,7 @@ export class SelectionManager {
       } catch (error) { throw new UserError((error as Error).message); }
     },
     submit: request => this.submit(request),
+    reveal: () => { if (this.require().view.badge) this.update({ badge: false }); },
     details: open => { if (typeof open === 'boolean') this.update({ details: open }); },
     expand: () => { this.close(); this.deps.expand(); },
     close: () => this.close(),
@@ -81,12 +84,14 @@ export class SelectionManager {
   private onEvent(event: string) {
     if (this.deps.blocked()) return;
     if (event === 'focus') {
+      this.lastSelection = '';
       if (!this.deps.toolbar.focused) this.close();
       return;
     }
     if ((event === 'click' || event === 'drag') && this.deps.toolbar.contains(screen.getCursorScreenPoint())) return;
     if (this.deps.toolbar.focused && event === 'selection') return;
     if (event === 'click') { if (this.session) this.close(); return; }
+    if (event === 'drag') this.lastSelection = '';
     if (!this.deps.settings().selectionAuto || (event !== 'drag' && event !== 'selection')) return;
     clearTimeout(this.timer);
     const wait = Math.max(150, 400 - (Date.now() - this.lastQuery));
@@ -105,17 +110,25 @@ export class SelectionManager {
       const data = await d.reader.read(settings.denied, controller.signal);
       if (controller.signal.aborted || d.blocked() || this.query !== controller) return;
       const result = data.selection;
-      if (result.status !== 'ok' && !manual) { if (!d.toolbar.focused) this.dismissSession(); return; }
+      if (result.status !== 'ok' && !manual) {
+        this.lastSelection = '';
+        if (!d.toolbar.focused) this.dismissSession();
+        return;
+      }
       const text = result.status === 'ok' ? selectionText(result.text) : '';
       if (!manual && (!text || result.status !== 'ok' || !result.rectangles.length)) return;
-      if (!manual && text === this.session?.view.text && this.session?.target && sameTarget(this.session.target, data.target)) return;
+      const key = createHash('sha256').update(JSON.stringify([data.target.id, text,
+        result.status === 'ok' ? result.rectangles : []])).digest('hex');
+      if (!manual && (key === this.lastSelection ||
+          (text === this.session?.view.text && this.session?.target && sameTarget(this.session.target, data.target)))) return;
+      this.lastSelection = key;
       const bound = d.bound();
-      this.sending?.abort();
+      if (this.session) this.dismissSession();
       this.session = { target: data.target, view: {
         text, source: data.target.executable, notice: result.status === 'ok' ? undefined : messages[result.status],
         canImport: result.status === 'empty' || result.status === 'unsupported',
         canAttach: !!bound && sameTarget(bound, data.target), language: settings.selectionLanguage,
-        theme: settings.theme, answer: '', busy: false, conversation: false,
+        theme: settings.theme, answer: '', busy: false, conversation: false, automatic: !manual, badge: !manual,
       }};
       if (!await d.toolbar.show(result.status === 'ok' ? result.rectangles : [], this.session.view, manual) &&
           this.query === controller) this.dismissSession();

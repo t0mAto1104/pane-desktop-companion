@@ -22,7 +22,11 @@ if ([PaneHotkey]::GetForegroundWindow() -ne $fixture) {
 }
 if ([PaneHotkey]::GetForegroundWindow() -ne $fixture) { throw 'The dedicated fixture did not have foreground focus.' }
 if ($args[1] -eq 'focus-only') { return }
-$trigger = if ($args[1] -eq 'selection') { 81 } else { 32 }
+$trigger = switch ($args[1]) {
+    'selection' { 81 }
+    'selection-test' { 122 }
+    default { 32 }
+}
 try {
     foreach ($key in 17,16,$trigger) { [PaneHotkey]::keybd_event($key, 0, 0, [UIntPtr]::Zero) }
 } finally {

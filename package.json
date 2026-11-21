@@ -1,6 +1,6 @@
 {
   "name": "pane-desktop-companion",
-  "version": "3.5.0-voice.1",
+  "version": "3.5.0-voice.4",
   "productName": "Pane",
   "description": "Windows desktop window companion",
   "main": "dist/main/main.cjs",
@@ -22,7 +22,8 @@
     "test:desktop:account": "node tests/account-desktop.mjs",
     "test:desktop:selection": "node tests/selection-desktop.mjs",
     "test:desktop:voice": "node tests/voice-desktop.mjs",
-    "dist:win": "npm run build && electron-builder --win nsis --x64"
+    "build:whisper": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-whisper.ps1",
+    "dist:win": "npm run build && npm run build:whisper && electron-builder --win nsis --x64"
   },
   "dependencies": {},
   "devDependencies": {
