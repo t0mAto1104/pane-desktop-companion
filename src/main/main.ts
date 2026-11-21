@@ -1,7 +1,7 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, session, Tray, type Rectangle } from 'electron';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { awarenessOptions, companionOptions, type Actions, type CaptureState, type ObservationUse, type ScreenRegion, type SendResult, type Settings, type Target, type WindowSurface } from '../shared';
+import { awarenessOptions, companionOptions, type Actions, type CaptureState, type GuidanceState, type ObservationUse, type ScreenRegion, type SendResult, type Settings, type Target, type WindowSurface } from '../shared';
 import { Store } from './store';
 import { NativeBridge, sameTarget, UserError } from './native';
 import { AI, diagnostic } from './ai';
@@ -9,6 +9,7 @@ import { Chat } from './chat';
 import { queryDesktop } from './desktop-query';
 import { LocationEngine, type ToolScope } from './location';
 import { GuidanceEngine } from './guidance';
+import { GuidanceTracker } from './guidance-tracker';
 import { OverlayManager } from './overlay-manager';
 import { regionUnits } from './roi';
 import { ElementDetector, matchElements } from './element-detector';
@@ -41,6 +42,7 @@ const resolver = new CaptureResolver({
   capture: (target, denied, signal) => captureBridge.capture(target, denied, signal, 2800),
 });
 const overlay = new OverlayManager();
+const tracker = new GuidanceTracker();
 const location = new LocationEngine(detector, readEvidence,
   (instructions, data, image, signal) => queryDesktop(ai, settings, instructions, data, image, signal),
   async (id, scope) => {
@@ -49,7 +51,7 @@ const location = new LocationEngine(detector, readEvidence,
   });
 const guidance = new GuidanceEngine(detector, readEvidence,
   (instructions, data, image, signal) => queryDesktop(ai, settings, instructions, data, image, signal),
-  state => send('guidance', state));
+  publishGuidance);
 let pendingSend: { id: string; controller: AbortController } | undefined;
 let captureJob: AbortController | undefined;
 let locked = false;
@@ -66,6 +68,18 @@ let capture: CaptureState = { target: null, bound: false, pending: false, shot: 
 
 function send(channel: string, payload?: unknown) {
   if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send(`pane:${channel}`, payload);
+}
+
+function publishGuidance(state: GuidanceState | null) {
+  send('guidance', state);
+  const target = boundTarget();
+  if (!state || !target || desktopUnavailable() || quitting) { tracker.clear(); return; }
+  const policy = toolScope.signal;
+  const denied = settings.denied;
+  tracker.present(state, async signal => {
+    const result = await captureBridge.geometry(target, denied, AbortSignal.any([signal, policy]));
+    return { ...result, foreground: result.foreground && !win.isFocused() };
+  });
 }
 
 function setCapture(next: Partial<CaptureState>) {
@@ -165,6 +179,24 @@ function hide() {
   syncCompanion();
 }
 
+function showCompact(panel?: WindowSurface['panel']) {
+  if (win.isMinimized()) win.restore();
+  if (!compact) normalBounds = win.getBounds();
+  compact = true;
+  win.setMinimumSize(280, 310);
+  win.setBounds(companion.panelBounds);
+  win.setAlwaysOnTop(true);
+  win.show();
+  win.focus();
+  syncCompanion();
+  send('shown', { compact, panel } satisfies WindowSurface);
+}
+
+function openGuidance() {
+  if (!ready || quitting || desktopUnavailable() || credentialPrompt) return;
+  showCompact('guide');
+}
+
 async function toggleCompanion() {
   if (!ready || quitting || desktopUnavailable() || !settings.companionEnabled || credentialPrompt) return;
   if (win.isVisible()) { if (compact) hide(); return; }
@@ -179,14 +211,7 @@ async function toggleCompanion() {
   finally { nativeLookupPending = false; }
   if (generation !== invocation || win.isVisible() || desktopUnavailable() || !settings.companionEnabled || quitting) return;
   setCapture({ target, pending: false, shot: null, error });
-  if (!compact) normalBounds = win.getBounds();
-  compact = true;
-  win.setMinimumSize(280, 310);
-  win.setBounds(companion.panelBounds);
-  win.setAlwaysOnTop(true);
-  win.show();
-  win.focus();
-  send('shown', { compact } satisfies WindowSurface);
+  showCompact(guidance.state ? 'guide' : undefined);
 }
 
 async function onHotkey() {
@@ -315,7 +340,7 @@ const actions: Actions = {
   'companion:toggle': toggleCompanion,
   'companion:expand': panel => {
     if (panel !== undefined && panel !== 'guide' && panel !== 'settings') throw new UserError('无效的 Pane 页面。');
-    show(panel);
+    if (panel === 'guide') openGuidance(); else show(panel);
   },
   'window:list': () => captureBridge.list(settings.denied),
   'capture:bind': async id => {
@@ -362,6 +387,7 @@ const actions: Actions = {
     return observations.preview(id);
   },
   'guidance:state': () => guidance.state,
+  'guidance:open': openGuidance,
   'guidance:start': async (task, includeImage, region) => {
     assertIdle();
     overlay.clear();
@@ -382,7 +408,7 @@ const actions: Actions = {
     return guidance.pause(authorizedWindow(), pause);
   },
   'guidance:exit': () => cancelTools(),
-  'ui:clear': () => cancelTools(),
+  'ui:clear': () => { overlay.clear(); location.clear(); },
   'ui:highlight': (ids, style) => {
     const scope = authorizedWindow();
     if (!Array.isArray(ids) || !ids.length || ids.length > 6 || ids.some(id => typeof id !== 'string') ||
@@ -485,6 +511,7 @@ function updateTray() {
   if (!tray || tray.isDestroyed()) return;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开 Pane 主窗口', click: () => show() },
+    { label: '打开桌面指导', click: openGuidance },
     { label: '隐藏聊天窗口', click: hide },
     { label: '显示浮动助手', type: 'checkbox', checked: settings.companionEnabled,
       click: item => { saveSettings({ ...settings, companionEnabled: item.checked }); send('settings', settings); } },
@@ -520,12 +547,12 @@ function launch() {
     if (!quitting) { event.preventDefault(); hide(); }
   });
   win.on('minimize', hide);
-  win.on('focus', () => overlay.hide());
+  win.on('focus', () => { overlay.hide(); tracker.hide(); });
   companion = new CompanionWindow(rendererFile, join(__dirname, 'preload.cjs'), store.read('companion.position'),
     point => store.write('companion.position', point), () => {
       if (compact && win.isVisible() && !win.isMaximized()) win.setBounds(companion.panelBounds);
     });
-  const displaysChanged = () => { overlay.hide(); companion.reposition(); };
+  const displaysChanged = () => { overlay.hide(); tracker.hide(); companion.reposition(); };
   screen.on('display-metrics-changed', displaysChanged);
   screen.on('display-added', displaysChanged);
   screen.on('display-removed', displaysChanged);

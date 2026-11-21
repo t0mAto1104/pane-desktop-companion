@@ -165,8 +165,18 @@ try {
 
   await main.getByRole('button', { name: '桌面指导' }).click();
   await main.getByRole('dialog', { name: '桌面指导' }).waitFor();
+  await waitState(value => value.main && value.mascot && value.chat.width < 570);
+  if (packaged) {
+    const guide = main.getByRole('dialog', { name: '桌面指导' });
+    await guide.getByRole('button', { name: '选择目标窗口' }).click();
+    await main.getByRole('dialog', { name: '选择目标窗口' }).getByRole('button', { name: /Pane 纸上交易验收/ }).click();
+    await guide.getByRole('textbox', { name: '教学任务' }).waitFor();
+    assert.equal((await snapshot()).capture.bound, true);
+    assert.equal((await snapshot()).capture.shot, null);
+  }
+  await main.getByRole('button', { name: '返回聊天' }).click();
+  await main.getByRole('button', { name: '展开主窗口' }).click();
   await waitState(value => value.main && !value.mascot && value.chat.width >= 570);
-  await main.getByRole('button', { name: '关闭弹窗' }).click();
   await main.getByRole('button', { name: '设置', exact: false }).first().click();
   await main.getByLabel('助手外观').selectOption('fox');
   await main.getByRole('button', { name: '隐藏到托盘' }).click();
@@ -194,7 +204,7 @@ try {
   assert.equal(reopened.pet.x, moved.x);
   assert.equal(reopened.pet.y, moved.y);
   assert.ok((await pet.locator('img').getAttribute('src')).endsWith('/fox.png'));
-  console.log('Guidance handoff restores the full window; character and position persist across restart and the mascot hides on lock.');
+  console.log('Guidance opens compact and the full window can be restored; character and position persist across restart and the mascot hides on lock.');
 } finally {
   await fixture?.close();
   await desktop?.close();

@@ -149,6 +149,8 @@ main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .overlay { position: absolute; z-index: 2; inset: 45px 0 0; background: #12132466; display: grid; place-items: center; padding: 18px; }
 .dialog { background: var(--surface); width: min(100%, 490px); max-height: 100%; overflow: auto; border: 1px solid var(--edge); border-radius: 13px; display: flex; flex-direction: column; box-shadow: 0 22px 55px #0003; }
 .dialog-heading { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 12px 14px 12px 17px; border-bottom: 1px solid var(--line); }
+.dialog-controls { display: flex; align-items: center; gap: 6px; }
+.dialog-controls .button { padding: 4px 7px; }
 .dialog-heading h2 { font-size: 16px; font-weight: 700; }
 .dialog-notice { margin: 8px 14px 0; }
 .dialog-body { padding: 14px 17px; overflow: auto; }
