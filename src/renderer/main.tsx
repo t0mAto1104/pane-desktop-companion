@@ -110,7 +110,7 @@ function App() {
           setError('');
           setSaved(false);
         }
-        setOverlay(value => surface.panel ?? (!surface.compact && value === 'guide' ? value : null));
+        setOverlay(surface.panel ?? null);
         focusComposer();
       }),
       window.pane.subscribe('settings', apply),

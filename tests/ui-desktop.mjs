@@ -221,6 +221,9 @@ try {
     await focusFixture();
     await waitTracker(value => !value.chatVisible && value.visible);
     assert.equal((await call('guidance:state')).steps[0].stepId, task.steps[0].stepId);
+    await call('companion:expand');
+    await panel.waitFor({ state: 'hidden' });
+    assert.equal((await call('guidance:state')).steps[0].stepId, task.steps[0].stepId);
     await call('guidance:open');
     await panel.getByRole('button', { name: '检查结果' }).waitFor();
     assert.equal(await remoteCalls(), 2);
