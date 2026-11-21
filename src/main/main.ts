@@ -25,6 +25,7 @@ import { SelectionReader } from './selection-reader';
 import { SelectionToolbar } from './selection-toolbar';
 import { SelectionManager } from './selection-manager';
 import type { SelectionActions } from '../selection';
+import { VoiceManager } from './voice-manager';
 
 const accelerator = 'Control+Shift+Space';
 const rendererFile = join(__dirname, '../renderer/index.html');
@@ -38,6 +39,7 @@ let win: BrowserWindow;
 let tray: Tray;
 let companion: CompanionWindow;
 let selection: SelectionManager;
+let voice: VoiceManager;
 let compact = false;
 let normalBounds: Rectangle | undefined;
 let store: Store;
@@ -169,6 +171,7 @@ function syncCompanion() {
 function show(panel?: WindowSurface['panel']) {
   if (!win || win.isDestroyed() || desktopUnavailable()) return;
   selection?.close();
+  voice?.close();
   if (win.isMinimized()) win.restore();
   if (compact) {
     compact = false;
@@ -193,6 +196,7 @@ function hide() {
 
 function showCompact(panel?: WindowSurface['panel']) {
   selection?.close();
+  voice?.close();
   if (win.isMinimized()) win.restore();
   if (!compact) normalBounds = win.getBounds();
   compact = true;
@@ -315,6 +319,7 @@ const actions: Actions = {
     Object.assign(next, selectionOptions({ ...settings, ...patch }));
     if (patch.denied !== undefined) {
       selection?.close();
+      voice?.close();
       next.denied = denyList(patch.denied);
       cancelTools();
       invalidateSend('禁止捕获名单已变更，请重新发送。');
@@ -327,6 +332,13 @@ const actions: Actions = {
     return saveSettings(next);
   },
   'window:hide': hide,
+  'voice:open': () => {
+    if (!ready || quitting || desktopUnavailable() || credentialPrompt) return;
+    selection.close();
+    const target = boundTarget() ?? capture.target;
+    hide();
+    void voice.show(target);
+  },
   'companion:appearance': () => companion.appearance(),
   'companion:toggle': toggleCompanion,
   'companion:expand': panel => {
@@ -337,6 +349,7 @@ const actions: Actions = {
   'capture:bind': async id => {
     if (desktopUnavailable()) throw new UserError('请先解锁 Windows 桌面。');
     selection?.close();
+    voice?.close();
     cancelTools();
     invalidateSend('目标窗口已切换，请重新发送。');
     if (id === null) {
@@ -550,7 +563,7 @@ function launch() {
   const bar = new SelectionToolbar(rendererFile, join(__dirname, 'preload.cjs'), () => selection.close());
   selection = new SelectionManager({
     reader: new SelectionReader(captureBridge), toolbar: bar, settings: () => settings, bound: boundTarget,
-    blocked: () => quitting || desktopUnavailable() || !ready,
+    blocked: () => quitting || desktopUnavailable() || !ready || !!voice?.isOpen,
     validate: (target, signal) => captureBridge.validate(target, settings.denied, signal),
     submit: (target, text, request, signal) => {
       const intent = { explain: '解释选区', translate: request.language === 'zh' ? '翻译成简体中文' : '翻译成英文',
@@ -575,10 +588,20 @@ function launch() {
       return { ok: true, value: await handler(...args) };
     } catch (error) { return { ok: false, error: diagnostic(error) }; }
   });
-  chat = new Chat(store, ai, update => { send('chat', update); selection.onChat(update); syncCompanion(); });
+  voice = new VoiceManager({
+    html: rendererFile, preload: join(__dirname, 'preload.cjs'), changed: () => selection.configure(),
+    blocked: () => quitting || desktopUnavailable() || !ready,
+    submit: (text, target, signal) => input.external('voice', text, target, false, signal,
+      async check => { if (target) await captureBridge.validate(target, settings.denied, check); }),
+    reply: run => store.lastTurn(run.conversationId)[1],
+  });
+  chat = new Chat(store, ai, update => {
+    send('chat', update); selection.onChat(update); voice.onChat(update); syncCompanion();
+  });
   observations.configure(null, settings, settings.denied);
   const pauseDesktop = () => {
     selection.close();
+    voice.close();
     cancelTools();
     invalidateSend('Windows 桌面不可用，本轮发送已停止。');
     chat.stop();
@@ -627,7 +650,7 @@ app.setAppUserModelId('local.pane.desktop-companion');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => show());
-  app.on('before-quit', () => { quitting = true; selection?.close(); companion?.savePosition(); cancelTools(); invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
+  app.on('before-quit', () => { quitting = true; selection?.close(); voice?.close(); companion?.savePosition(); cancelTools(); invalidateSend('Pane 正在退出。'); supersedeCapture(); observations.dispose(); chat?.shutdown(); ai?.cancelSignIn(); });
   app.on('will-quit', () => { globalShortcut.unregisterAll(); store?.close(); });
   app.whenReady().then(launch).catch(() => app.exit(1));
 }
