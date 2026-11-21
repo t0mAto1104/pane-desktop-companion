@@ -76,7 +76,7 @@ export async function streamResponse(
         options.onDelta?.(event.delta);
       } else if (event.type === "response.failed" || event.type === "error") {
         const detail = event.type === "response.failed" ? event.response : event;
-        throw apiError(detail, response.status, result.request_id);
+        throw apiError(detail, response.status, result.request_id, response.headers.get("retry-after"));
       } else if (event.type === "response.incomplete") {
         throw new ChatGPTError("response_incomplete", "ChatGPT stopped before completing the response. You can keep the partial text or try again.", true);
       } else if (event.type === "response.completed") {
@@ -96,7 +96,8 @@ export async function streamResponse(
     if (error instanceof OpenAI.APIError && !(error instanceof OpenAI.APIConnectionError) && !(error instanceof OpenAI.APIUserAbortError)) {
       // The SDK also unwraps the string in an OAuth { error: "code" } response.
       const detail = typeof error.error === "string" ? { error: error.error } : error.error;
-      throw apiError(detail, error.status ?? response?.status, error.requestID ?? response?.headers.get("x-request-id"));
+      throw apiError(detail, error.status ?? response?.status, error.requestID ?? response?.headers.get("x-request-id"),
+        error.headers?.get("retry-after") ?? response?.headers.get("retry-after"));
     }
     if (!response) throw new ChatGPTError("network_error", "Could not reach ChatGPT. Check your connection and try again.", true);
     if (error instanceof SyntaxError) throw new ChatGPTError("invalid_stream", "The response stream contained an invalid event. Try again.", true);

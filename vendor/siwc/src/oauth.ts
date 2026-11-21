@@ -117,7 +117,7 @@ async function tokenRequest(body: URLSearchParams, signal: AbortSignal): Promise
     signal,
   });
   const data = await jsonResponse(response);
-  if (!response.ok) throw apiError(data, response.status, response.headers.get("x-request-id"));
+  if (!response.ok) throw apiError(data, response.status, response.headers.get("x-request-id"), response.headers.get("retry-after"));
   if (!isObject(data)) throw new ChatGPTError("invalid_token_response", "ChatGPT returned an invalid token response. Please sign in again.");
   return data;
 }

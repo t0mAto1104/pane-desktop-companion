@@ -10,6 +10,7 @@ export function diagnostic(error: unknown) {
 
 export class AI {
   private pausedOnce = false;
+  assertResponseReady() {}
   async account() { return { status: 'connected', sharing: true, label: '本地验收', apiKey: false }; }
   signIn() { return this.account(); }
   cancelSignIn() {}

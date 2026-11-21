@@ -7,7 +7,7 @@ export async function listModels(accessToken: string, signal: AbortSignal): Prom
     signal,
   });
   const body = await jsonResponse(response);
-  if (!response.ok) throw apiError(body, response.status, response.headers.get("x-request-id"));
+  if (!response.ok) throw apiError(body, response.status, response.headers.get("x-request-id"), response.headers.get("retry-after"));
   if (!isObject(body) || !Array.isArray(body.models)) {
     throw new ChatGPTError("invalid_model_catalog", "ChatGPT returned an unexpected model catalog. Try again.", true, response.status);
   }

@@ -4,6 +4,7 @@ interface ErrorDiagnostics {
   requestId?: string;
   param?: string;
   responseShape?: string;
+  retryAfter?: string;
 }
 
 export class ChatGPTError extends Error implements SessionError {
@@ -13,6 +14,7 @@ export class ChatGPTError extends Error implements SessionError {
   readonly requestId?: string;
   readonly param?: string;
   readonly responseShape?: string;
+  readonly retryAfter?: string;
 
   constructor(code: string, message: string, retryable = false, status?: number, diagnostics: ErrorDiagnostics = {}) {
     super(message);
@@ -23,6 +25,7 @@ export class ChatGPTError extends Error implements SessionError {
     if (diagnostics.requestId !== undefined) this.requestId = diagnostics.requestId;
     if (diagnostics.param !== undefined) this.param = diagnostics.param;
     if (diagnostics.responseShape !== undefined) this.responseShape = diagnostics.responseShape;
+    if (diagnostics.retryAfter !== undefined) this.retryAfter = diagnostics.retryAfter;
   }
 
   toJSON(): SessionError {
@@ -115,7 +118,7 @@ function invalidRequest(detail: Record<string, unknown>): string {
   return "ChatGPT rejected this request. Check its input, model, and supported options.";
 }
 
-export function apiError(body: unknown, status?: number, requestId?: string | null): ChatGPTError {
+export function apiError(body: unknown, status?: number, requestId?: string | null, retryAfter?: string | null): ChatGPTError {
   let detail = isObject(body) ? body : {};
   for (let depth = 0; depth < 4; depth += 1) {
     if (isObject(detail.error)) detail = detail.error;
@@ -129,6 +132,7 @@ export function apiError(body: unknown, status?: number, requestId?: string | nu
   const param = safeIdentifier(detail.param);
   const diagnostics: ErrorDiagnostics = {
     responseShape: shapeOf(body),
+    ...(retryAfter ? { retryAfter } : {}),
     ...(safeRequestId ? { requestId: safeRequestId } : {}),
     ...(param ? { param } : {}),
   };
@@ -182,7 +186,7 @@ export async function jsonResponse(response: Response): Promise<unknown> {
     if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
       throw asError(error);
     }
-    if (!response.ok) throw apiError(undefined, response.status, response.headers.get("x-request-id"));
+    if (!response.ok) throw apiError(undefined, response.status, response.headers.get("x-request-id"), response.headers.get("retry-after"));
     throw new ChatGPTError("invalid_response", "ChatGPT returned an unexpected response. Try again.", true, response.status);
   }
 }

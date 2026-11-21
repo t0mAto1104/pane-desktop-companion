@@ -1,4 +1,4 @@
-export type Events = { capture: CaptureState; observation: ObservationState; chat: Update; guidance: GuidanceState | null; account: undefined; shown: WindowSurface; mascot: MascotState; settings: Settings };
+export type Events = { capture: CaptureState; observation: ObservationState; chat: Update; guidance: GuidanceState | null; account: Account; shown: WindowSurface; mascot: MascotState; settings: Settings };
 export const COMPANION_SKINS = { orbit: '轨道机器人', fox: '灯笼狐', moss: '苔云' } as const;
 export type CompanionSkin = keyof typeof COMPANION_SKINS;
 export type MascotState = { skin: CompanionSkin; busy: boolean };
@@ -141,7 +141,7 @@ export interface Actions {
   'account:usage'(): Promise<void>;
   'account:addKey'(): Promise<Account>;
   'account:removeKey'(): Promise<Account>;
-  'account:models'(): Promise<Model[]>;
+  'account:models'(force?: boolean): Promise<Model[]>;
   'account:selectModel'(id: string): Settings;
   'chat:list'(): Conversation[];
   'chat:open'(id: string): Message[];
