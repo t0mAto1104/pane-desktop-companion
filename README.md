@@ -8,7 +8,7 @@ Pane 是一款 Windows 桌面 AI 助手。切换到目标应用后，可以用�
 
 适用于 **Windows 10/11 x64**。安装包未签名。
 
-- **3.5.0-voice.4 预览版**　包含自动划词、麦克风试录和本地 Whisper 转写。[下载安装包](https://github.com/t0mAto1104/pane-desktop-companion/releases/download/v3.5.0-voice.4/Pane-Setup-3.5.0-voice.4-x64.exe) · [版本说明](https://github.com/t0mAto1104/pane-desktop-companion/releases/tag/v3.5.0-voice.4)
+- **最新预览版 · 3.5.0-voice.5**　采用「折窗」新标志，包含自动划词、麦克风试录和本地 Whisper 转写。[下载安装包](https://github.com/t0mAto1104/pane-desktop-companion/releases/download/v3.5.0-voice.5/Pane-Setup-3.5.0-voice.5-x64.exe) · [版本说明](https://github.com/t0mAto1104/pane-desktop-companion/releases/tag/v3.5.0-voice.5)
 - **稳定版**　包含浮动聊天、窗口截图问答和桌面指导。[查看最新稳定版](https://github.com/t0mAto1104/pane-desktop-companion/releases/latest)
 
 ## 主要功能
@@ -22,7 +22,7 @@ Pane 是一款 Windows 桌面 AI 助手。切换到目标应用后，可以用�
 
 | 浅色 | 深色 |
 | --- | --- |
-| ![Pane 浅色界面](docs/Pane-Light.png) | ![Pane 深色界面](docs/Pane-Dark.png) |
+| ![Pane 3.5.0-voice.5 浅色界面](docs/Pane-Light.png) | ![Pane 3.5.0-voice.5 深色界面](docs/Pane-Dark.png) |
 
 ## 浮动助手
 
