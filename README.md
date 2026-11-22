@@ -1,10 +1,22 @@
 # Pane · Windows 桌面助手
 
-Pane 是一个本地运行的 Windows 桌面助手。点击浮动角色即可问答、截取窗口和进入桌面指导，也可通过全局快捷键打开完整聊天界面。默认通过 ChatGPT 套餐连接，也可选择独立的 OpenAI API Key。
+Pane 是一款 Windows 桌面 AI 助手。切换到目标应用后，可以用浮动角色或全局快捷键唤出聊天，直接针对窗口画面、选中的文字或语音提问。桌面指导会在右上角显示操作步骤，并在目标窗口上高亮相关控件。
 
-## 下载与预览
+## 下载
 
-[下载最新 Windows x64 安装包](https://github.com/t0mAto1104/pane-desktop-companion/releases/latest)
+适用于 **Windows 10/11 x64**。安装包未签名。
+
+- **3.5.0-voice.4 预览版**　包含自动划词、麦克风试录和本地 Whisper 转写。[下载安装包](https://github.com/t0mAto1104/pane-desktop-companion/releases/download/v3.5.0-voice.4/Pane-Setup-3.5.0-voice.4-x64.exe) · [版本说明](https://github.com/t0mAto1104/pane-desktop-companion/releases/tag/v3.5.0-voice.4)
+- **稳定版**　包含浮动聊天、窗口截图问答和桌面指导。[查看最新稳定版](https://github.com/t0mAto1104/pane-desktop-companion/releases/latest)
+
+## 主要功能
+
+- **窗口问答**　按 **Ctrl+Shift+Space** 唤出 Pane。预览单个窗口的截图后再发送，也可绑定窗口，让 Pane 在本机观察界面变化。
+- **自动划词**　在「设置 → 全局划词」开启。在支持的应用里选中文字，悬停小图标即可翻译、解释或问 AI。
+- **离线语音转写**　在「设置 → 语音」试录并回放，首次下载约 190 MB 的 Whisper 模型后即可本地转写。确认草稿后再发送。
+- **桌面指导**　在目标窗口上高亮控件，把当前操作步骤显示在屏幕右上角。实际点击和输入由你完成。
+
+聊天可通过符合条件的 ChatGPT 账户或独立 OpenAI API Key 连接。语音转写在设备上完成。截图和文字在你确认发送后才提交给聊天服务。
 
 | 浅色 | 深色 |
 | --- | --- |
@@ -94,7 +106,7 @@ node tests/ui-desktop.mjs --packaged
 node tests/companion-desktop.mjs --packaged
 ```
 
-安装包位于 `release/Pane-Setup-3.4.0-x64.exe`。桌面测试会打开一个专用的模拟交易窗口，并向该窗口发送快捷键。它验证截图像素、刷新、绑定、多轮流式 UI、停止、重发以及 SQLite 重启恢复。AI 响应由本地测试替身提供。自动化也覆盖两种 Responses HTTP 流，以及模拟 OAuth 回调、凭据轮换和模型发现。
+安装包输出到 `release/`，文件名包含当前版本号。桌面测试会打开一个专用的模拟交易窗口，并向该窗口发送快捷键。它验证截图像素、刷新、绑定、多轮流式 UI、停止、重发以及 SQLite 重启恢复。AI 响应由本地测试替身提供。自动化也覆盖两种 Responses HTTP 流，以及模拟 OAuth 回调、凭据轮换和模型发现。
 
 本次验收使用本机 Windows 构建 26300、单显示器、100% DPI。桌面测试覆盖窗口缩放、观察启停、禁止名单、窗口重开、动态行情即时捕获、锁屏事件模拟、截图竞态和显式发送。单元测试覆盖 DPI 变化评分。账户登录、真实图片推理、独立 Windows 10、多物理显示器及混合 DPI 实机矩阵需要在覆盖相应环境时验证。OAuth 测试可在安装包中使用有资格的账户授权，然后切到专用窗口发送一张测试截图，再追问截图中的细节。
 
