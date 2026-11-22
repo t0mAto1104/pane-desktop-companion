@@ -1,3 +1,5 @@
+<img src="src/renderer/public/pane.png" alt="Pane 折窗标志" width="96" height="96" />
+
 # Pane · Windows 桌面助手
 
 Pane 是一款 Windows 桌面 AI 助手。切换到目标应用后，可以用浮动角色或全局快捷键唤出聊天，直接针对窗口画面、选中的文字或语音提问。桌面指导会在右上角显示操作步骤，并在目标窗口上高亮相关控件。
