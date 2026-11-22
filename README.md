@@ -4,6 +4,14 @@
 
 Pane 是一款 Windows 桌面 AI 助手。切换到目标应用后，可以用浮动角色或全局快捷键唤出聊天，直接针对窗口画面、选中的文字或语音提问。桌面指导会在右上角显示操作步骤，并在目标窗口上高亮相关控件。
 
+## 39 秒产品演示
+
+主窗口收起后，点轨道机器人打开迷你聊天。一键截取正在用的窗口，预览后直接问，免保存、免导入。也可以在其他应用里划词，随时翻译、解释或追问。
+
+https://github.com/user-attachments/assets/e4d62571-25f8-437b-b1cc-7a00d160b7d3
+
+[下载 1080p MP4](https://github.com/t0mAto1104/pane-desktop-companion/releases/download/v3.5.0-voice.5/Pane-Product-Trailer-39s.mp4) · [查看封面](docs/Pane-Trailer-39s.png)
+
 ## 下载
 
 适用于 **Windows 10/11 x64**。安装包未签名。
