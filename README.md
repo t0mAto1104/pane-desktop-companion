@@ -10,7 +10,7 @@ Pane 是一款 Windows 桌面 AI 助手。切换到目标应用后，可以用�
 
 https://github.com/user-attachments/assets/e4d62571-25f8-437b-b1cc-7a00d160b7d3
 
-[下载 1080p MP4](https://github.com/t0mAto1104/pane-desktop-companion/releases/download/v3.5.0-voice.5/Pane-Product-Trailer-39s.mp4)
+[下载 1080p MP4](https://github.com/t0mAto1104/pane-desktop-companion/releases/download/v3.5.0-voice.5/Pane-Product-Trailer-39s.mp4) · [查看封面](docs/Pane-Trailer-39s.png)
 
 ## 下载
 
