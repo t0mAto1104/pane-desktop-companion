@@ -21,3 +21,7 @@
 ### Moss Cloud
 
 > Create a production-ready original desktop mascot sprite for Pane, a Windows AI desktop helper. Design name: Moss Cloud. A compact pale-mint cloud creature with a three-lobed rounded silhouette and two small teardrop feet, two deep-teal oval eyes and a small soft-green two-leaf sprout on its head leaning slightly to the right. One light butter-yellow cheek accent on each side. Sophisticated flat-shaded cartoon, clean soft dark-teal contour, visibly different from a robot and a fox, extremely clear at 64 px, friendly quietly curious mood. Front-facing stationary pose. A single sprite in a 1024 × 1024 square with genuine transparent alpha, tight framing plus 10% empty margin all around. No text, logo, background, ground, cast shadow, UI mockup, props, sparkles, or other poses.
+
+## 应用标志
+
+Pane 的应用图标采用「折窗」。轨道机器人的头鳍和双眼与窗口组合成字母 P。透明原稿为 `assets/pane-logo.png`，运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-icons.ps1` 可重新生成 Windows ICO、应用 PNG 和托盘图标。托盘版加浅色底以保持深浅任务栏上的对比度。

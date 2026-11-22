@@ -22,7 +22,7 @@ async function call<K extends keyof Actions>(name: K, ...args: Parameters<Action
   return result.value;
 }
 
-function Mark() { return <span className="mark"><ScanLine size={17} strokeWidth={1.8} /></span>; }
+function Mark() { return <span className="mark"><img src="./pane.png" alt="" /></span>; }
 
 function IconButton({ title, children, onClick, pressed, disabled }: { title: string; children: React.ReactNode; onClick: () => void; pressed?: boolean; disabled?: boolean }) {
   return <button className={`icon ${pressed ? 'on' : ''}`} title={title} aria-label={title} aria-pressed={pressed} onClick={onClick} disabled={disabled}>{children}</button>;
@@ -451,7 +451,7 @@ function App() {
               <MascotImage skin={skin} className="companion-welcome-art" />
               <h1>有什么可以帮你？</h1>
             </> : <>
-              <div className="welcome-art" aria-hidden="true"><ScanLine size={30} strokeWidth={1.55} /></div>
+              <div className="welcome-art" aria-hidden="true"><img src="./pane.png" alt="" /></div>
               <h1>聊聊屏幕上的内容</h1>
               <p>切换到任意应用后按 <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Space</kbd><br />预览窗口截图，随时提问。</p>
             </>}

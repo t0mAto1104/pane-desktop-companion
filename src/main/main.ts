@@ -667,7 +667,7 @@ function launch() {
   globalShortcut.register('Control+Shift+Q', () => void selection.open(true));
   shortcut = globalShortcut.register(accelerator, () => void onHotkey());
 
-  const icon = nativeImage.createFromPath(join(__dirname, '../renderer/pane.png')).resize({ width: 24, height: 24 });
+  const icon = nativeImage.createFromPath(join(__dirname, '../renderer/pane-tray.png')).resize({ width: 24, height: 24 });
   tray = new Tray(icon);
   tray.setToolTip('Pane · Ctrl+Shift+Space');
   updateTray();
