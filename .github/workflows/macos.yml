@@ -2,8 +2,6 @@
 name: macOS preview
 
 on:
-  push:
-    branches: [feat/macos]
   pull_request:
     paths:
       - 'native/macos/**'
@@ -25,6 +23,7 @@ concurrency:
 jobs:
   build:
     name: macOS ${{ matrix.arch }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +45,9 @@ jobs:
       - run: npm ci --legacy-peer-deps
       - run: npm test
       - run: npm run dist:mac -- -c.mac.identity=- -c.mac.hardenedRuntime=false
+        env:
+          # CI uses only local ad-hoc signatures and receives no signing credentials.
+          CSC_FOR_PULL_REQUEST: 'true'
       - run: npm run test:mac -- --packaged
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
