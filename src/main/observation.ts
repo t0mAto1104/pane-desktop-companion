@@ -242,6 +242,6 @@ export class ObservationManager {
 
   private fail(target: Target, error: unknown) {
     const transient = error instanceof CaptureError && ['timeout', 'worker_exit', 'no_frame', 'resized'].includes(error.code);
-    this.finish('stopped', target, error instanceof Error ? error.message : 'Windows 捕获失败。可尝试手动刷新截图。', transient);
+    this.finish('stopped', target, error instanceof Error ? error.message : '屏幕捕获失败。可尝试手动刷新截图。', transient);
   }
 }

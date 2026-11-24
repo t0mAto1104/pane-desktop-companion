@@ -26,6 +26,7 @@ type Dependencies = {
 export class SelectionManager {
   private session?: { target?: Target; view: SelectionView; run?: Run };
   private watcher?: AbortController;
+  private watchedDenyList?: string[];
   private query?: AbortController;
   private sending?: AbortController;
   private timer?: ReturnType<typeof setTimeout>;
@@ -71,10 +72,12 @@ export class SelectionManager {
   configure() {
     const props = this.deps.settings();
     if (this.deps.blocked() || !props.selectionEnabled) { this.close(); return; }
-    if ((props.selectionAuto || !!this.session) && !this.watcher) {
+    if ((props.selectionAuto || !!this.session) && (!this.watcher || this.watchedDenyList !== props.denied)) {
+      this.watcher?.abort();
       const watcher = new AbortController();
       this.watcher = watcher;
-      this.deps.reader.watch(watcher.signal, event => this.onEvent(event));
+      this.watchedDenyList = props.denied;
+      this.deps.reader.watch(watcher.signal, event => this.onEvent(event), props.denied);
     } else if (!props.selectionAuto && !this.session) {
       this.watcher?.abort();
       this.watcher = undefined;

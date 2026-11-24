@@ -1,5 +1,6 @@
 import { SelectionToolbar } from './SelectionToolbar';
 import { VoiceDeviceSettings } from './VoiceDeviceSettings';
+import { MacPermissions } from './MacPermissions';
 import type { VoiceState } from '../voice';
 import { VoiceMeter } from './VoiceMeter';
 import { Mic } from 'lucide-react';
@@ -47,6 +48,7 @@ function App() {
   const [guide, setGuide] = useState<GuidanceState | null>(null);
   const [compact, setCompact] = useState(false);
   const [settings, setSettings] = useState<Settings>();
+  const [mac, setMac] = useState(false);
   const [account, setAccount] = useState<Account>();
   const [models, setModels] = useState<Model[]>([]);
   const [modelBusy, setModelBusy] = useState(false);
@@ -146,6 +148,7 @@ function App() {
     ];
     void call('snapshot').then(async state => {
       apply(state.settings);
+      setMac(state.mac);
       setCapture(state.capture);
       if (!shown) setCompact(state.compact);
       if (!observed) setObservation(state.observation);
@@ -601,7 +604,7 @@ function App() {
                 {account?.sharing && <button className="button" onClick={() => void call('account:usage').catch(fail)}>管理用量</button>}
               </div>
             </> : <>
-              <p className="muted">{account?.apiKey ? '已使用 Windows 加密保存 API Key。' : '在 Windows 原生输入框中输入 OpenAI API Key。'}</p>
+              <p className="muted">{account?.apiKey ? '已使用系统加密保存 API Key。' : '在系统安全输入框中输入 OpenAI API Key。'}</p>
               <div className="button-row"><button className="button primary" disabled={accountBusy || !!run} onClick={() => void doAccount('account:addKey')}>{account?.apiKey ? '更新 API Key' : '添加 API Key'}</button>
                 {account?.apiKey && <button className="button" disabled={accountBusy || !!run} onClick={() => void doAccount('account:removeKey')}>移除</button>}</div>
             </>}
@@ -631,6 +634,7 @@ function App() {
               onChange={event => void change({ selectionLanguage: event.currentTarget.value === 'en' ? 'en' : 'zh' })}>
               <option value="zh">简体中文</option><option value="en">英文</option></select></label>
           </section>
+          {mac && <MacPermissions call={call} onError={fail} />}
           <VoiceDeviceSettings settings={settings} update={patch => void change(patch)} voice={voice} />
           <section><h3>屏幕感知</h3>
             <label className="check-field"><input type="checkbox" checked={settings.screenAwarenessEnabled}
@@ -648,7 +652,7 @@ function App() {
             </div>
           </section>
           <section><h3>禁止捕获的应用</h3>
-            <label className="field">每行一个可执行文件名<textarea rows={4} value={denyDraft} onChange={event => { setDenyDraft(event.target.value); setSaved(false); }} placeholder="example.exe" /></label>
+            <label className="field">{mac ? '每行一个应用标识' : '每行一个可执行文件名'}<textarea rows={4} value={denyDraft} onChange={event => { setDenyDraft(event.target.value); setSaved(false); }} placeholder={mac ? 'com.example.app' : 'example.exe'} /></label>
             <div className="button-row"><button className="button" onClick={() => { clearError(); void call('settings:update', { denied: denyDraft.split(/\r?\n/).map(item => item.trim()).filter(Boolean) }).then(value => { apply(value); setSaved(true); }).catch(fail); }}>保存名单</button>{saved && <span className="muted" role="status">已保存</span>}</div>
           </section>
         </div>}

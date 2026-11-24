@@ -1,6 +1,7 @@
-import { BrowserWindow, screen } from 'electron';
+import { BrowserWindow } from 'electron';
 import type { HighlightStyle, PixelRect, WindowGeometry } from '../shared';
 import { safeOverlayBounds } from './overlay-geometry';
+import { nativeDisplayAt, toDip, toNative } from './platform';
 
 type Marker = { rect: PixelRect; name: string; source: 'uia' | 'vision' };
 type Verify = (signal: AbortSignal) => Promise<{ geometry: WindowGeometry; markers: Marker[] } | null>;
@@ -58,9 +59,9 @@ export class OverlayManager {
 
   private async render(geometry: WindowGeometry, markers: Marker[], style: HighlightStyle, tick: number, signal: AbortSignal) {
     const mapped = markers.map(marker => safeOverlayBounds(marker.rect, geometry.dpi, {
-      toDip: point => screen.screenToDipPoint(point),
-      toScreen: point => screen.dipToScreenPoint(point),
-      displayAt: point => screen.getDisplayNearestPoint(point),
+      toDip,
+      toScreen: toNative,
+      displayAt: nativeDisplayAt,
     }));
     if (mapped.some(item => !item || item.displayId !== mapped[0]?.displayId)) { this.hide(); return; }
     const rects = mapped.map(item => item!.bounds);

@@ -100,7 +100,7 @@ export class AI {
 
   addKey(key: string) {
     if (!/^sk-[A-Za-z0-9_-]{12,}$/.test(key)) throw new UserError('请输入以 sk- 开头的 OpenAI API Key。');
-    if (!safeStorage.isEncryptionAvailable()) throw new UserError('Windows 凭据加密不可用。');
+    if (!safeStorage.isEncryptionAvailable()) throw new UserError('系统凭据加密不可用。');
     this.store.write(keySlot, safeStorage.encryptString(key).toString('base64'));
     this.resetProvider('api-key');
     return this.account();

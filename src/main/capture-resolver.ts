@@ -29,7 +29,7 @@ type Dependencies = {
 
 const text: TurnVisual = { source: 'text' };
 const unavailable = (reason: string): CaptureResolution => ({ source: 'unavailable', reason });
-const reason = (error: unknown) => error instanceof UserError ? error.message : 'Windows 无法读取当前窗口。';
+const reason = (error: unknown) => error instanceof UserError ? error.message : '系统无法读取当前窗口。';
 export const deniedTarget = (target: Target, denied: string[]) =>
   denied.some(app => app.toLowerCase() === target.executable.toLowerCase());
 
@@ -41,7 +41,7 @@ export class CaptureResolver {
     signal.throwIfAborted();
     if (desktopUnavailable) {
       return manual || use === 'image'
-        ? unavailable('Windows 桌面已锁定或正在休眠。当前截图无法验证。') : text;
+        ? unavailable('桌面已锁定或正在休眠。当前截图无法验证。') : text;
     }
 
     if (manual && use !== 'image') return this.validateManual(manual, denied, signal);

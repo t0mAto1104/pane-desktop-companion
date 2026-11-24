@@ -4,6 +4,7 @@ import type { PixelRect } from '../shared';
 import type { SelectionView } from '../selection';
 import { ownFrame } from './permission-manager';
 import { selectionPosition } from './selection-position';
+import { toDip } from './platform';
 
 export class SelectionToolbar {
   private win?: BrowserWindow;
@@ -31,8 +32,8 @@ export class SelectionToolbar {
   async show(rectangles: PixelRect[], view: SelectionView, focus = false) {
     const version = ++this.version;
     this.rectangles = rectangles.map(rect => {
-      const start = screen.screenToDipPoint({ x: rect.x, y: rect.y });
-      const end = screen.screenToDipPoint({ x: rect.x + rect.width, y: rect.y + rect.height });
+      const start = toDip({ x: rect.x, y: rect.y });
+      const end = toDip({ x: rect.x + rect.width, y: rect.y + rect.height });
       return { ...start, width: Math.max(1, end.x - start.x), height: Math.max(1, end.y - start.y) };
     });
     const anchor = this.rectangles.at(-1);

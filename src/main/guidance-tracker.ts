@@ -2,6 +2,7 @@ import { BrowserWindow, screen } from 'electron';
 import { sameRect } from './element-detector';
 import type { GuidanceState, WindowGeometry } from '../shared';
 import { trackerBounds, trackerDocument } from './guidance-tracker-view';
+import { toDip } from './platform';
 
 type Verify = (signal: AbortSignal) => Promise<WindowGeometry>;
 
@@ -38,7 +39,7 @@ export class GuidanceTracker {
         const { bounds, foreground } = await verify(controller.signal);
         if (controller.signal.aborted) return;
         if (!foreground) { this.hide(); return; }
-        const center = screen.screenToDipPoint({
+        const center = toDip({
           x: bounds.x + Math.floor(bounds.width / 2),
           y: bounds.y + Math.floor(bounds.height / 2),
         });
