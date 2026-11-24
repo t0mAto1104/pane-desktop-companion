@@ -1,0 +1,56 @@
+
+name: macOS preview
+
+on:
+  push:
+    branches: [feat/macos]
+  pull_request:
+    paths:
+      - 'native/macos/**'
+      - 'scripts/**'
+      - 'src/**'
+      - 'tests/**'
+      - '.github/workflows/macos.yml'
+      - 'package*.json'
+      - 'electron-builder.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.13.0
+          cache: npm
+      - run: npm ci --legacy-peer-deps
+      - run: npm test
+      - run: npm run dist:mac -- -c.mac.identity=- -c.mac.hardenedRuntime=false
+      - run: npm run test:mac -- --packaged
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: Pane-macOS-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            release/Pane-Mac-*.dmg
+            release/Pane-Mac-*.zip
