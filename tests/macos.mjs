@@ -6,16 +6,18 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { _electron as driver } from 'playwright-core';
 
 assert.equal(process.platform, 'darwin', 'macOS tests require a Mac');
 const run = promisify(execFile);
 let helper = resolve('native/bin/macos/pane-native');
 let whisper = resolve('native/bin/macos/whisper/whisper-cli');
+let bundle;
 if (process.argv.includes('--packaged')) {
   const dirs = await readdir('release', { withFileTypes: true });
   const app = dirs.find(item => item.isDirectory() && /^mac(?:-(arm64|x64))?$/.test(item.name));
   assert.ok(app, 'Packaged Pane.app is missing');
-  const bundle = resolve('release', app.name, 'Pane.app');
+  bundle = resolve('release', app.name, 'Pane.app');
   await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle]);
   const native = join(bundle, 'Contents/Resources/native');
   helper = join(native, 'pane-native');
@@ -34,6 +36,31 @@ for (const binary of [helper, whisper]) {
 }
 await run(whisper, ['--help'], { timeout: 10_000 });
 console.log('Native helper protocol, audio enumeration, bundle validation (packaged mode), and Whisper CLI architecture passed.');
+
+if (bundle) {
+  const profile = await mkdtemp(join(tmpdir(), 'pane-macos-profile-'));
+  let desktop;
+  try {
+    desktop = await driver.launch({ executablePath: join(bundle, 'Contents/MacOS/Pane'),
+      args: ['--show-main', '--user-data-dir=' + profile], timeout: 25_000 });
+    const page = await desktop.firstWindow();
+    await page.getByRole('heading', { name: '聊聊屏幕上的内容' }).waitFor({ timeout: 10_000 });
+    assert.equal(await page.evaluate(() => typeof require), 'undefined');
+    const checks = await page.evaluate(async () => ({
+      snapshot: await window.pane.call('snapshot'),
+      permissions: await window.pane.call('permissions:state'),
+      unknown: await window.pane.call('permissions:arbitrary'),
+    }));
+    assert.ok(checks.snapshot.ok && checks.snapshot.value.mac);
+    assert.ok(checks.permissions.ok &&
+      ['screen', 'accessibility', 'microphone'].every(key => typeof checks.permissions.value[key] === 'boolean'));
+    assert.equal(checks.unknown.ok, false);
+    console.log('Packaged Electron window, platform IPC, and renderer isolation passed.');
+  } finally {
+    await desktop?.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+}
 
 if (!process.argv.includes('--interactive')) {
   console.log('Interactive screen, AX, and microphone tests require a logged-in Mac and system permissions.');

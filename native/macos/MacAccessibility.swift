@@ -188,12 +188,13 @@ private func protected(_ node: AXUIElement) -> Bool {
     }
 
     func run() {
-        NSApplication.shared.setActivationPolicy(.prohibited)
+        let app = NSApplication.shared
+        app.setActivationPolicy(.prohibited)
         let timer = Timer.scheduledTimer(withTimeInterval: 0.28, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
         poll()
-        RunLoop.current.run()
+        app.run()
         timer.invalidate()
     }
 
