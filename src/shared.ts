@@ -122,13 +122,17 @@ export type SendResult = { kind: 'started'; run: Run } | { kind: 'confirm-text';
 export type Update = { type: 'delta'; run: Run; text: string } | { type: 'done'; run: Run };
 export type Model = { id: string; name: string };
 export type Account = { status: 'disconnected' | 'connecting' | 'connected' | 'reauth_required'; sharing: boolean; label?: string; apiKey: boolean };
-export type Snapshot = { settings: Settings; conversationId: string | null; capture: CaptureState; observation: ObservationState; run: Run | null; shortcut: boolean; compact: boolean };
+export type DesktopPermission = 'screen' | 'accessibility' | 'microphone';
+export type DesktopPermissions = Record<DesktopPermission, boolean>;
+export type Snapshot = { settings: Settings; conversationId: string | null; capture: CaptureState; observation: ObservationState; run: Run | null; shortcut: boolean; compact: boolean; mac: boolean };
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export interface Actions {
   snapshot(): Snapshot;
   'settings:update'(settings: Partial<AwarenessOptions & CompanionOptions & SelectionOptions & VoiceSettings & Pick<Settings, 'theme' | 'pinned' | 'autoCapture' | 'denied' | 'provider'>>): Settings;
   'window:hide'(): void;
+  'permissions:state'(): DesktopPermissions | null;
+  'permissions:request'(permission: DesktopPermission): Promise<DesktopPermissions | null>;
   'voice:devices'(): Promise<VoiceDevice[]>;
   'voice:modelStatus'(): Promise<VoiceModelState>;
   'voice:modelDownload'(): Promise<void>;

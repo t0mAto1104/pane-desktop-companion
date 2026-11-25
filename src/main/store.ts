@@ -8,7 +8,9 @@ const defaults: Settings = {
   ...companionOptions({}),
   ...selectionOptions({}),
   ...voiceSettings({}),
-  theme: 'system', pinned: true, autoCapture: true, denied: ['CredentialUIBroker.exe', 'LogonUI.exe', 'KeePass.exe', 'KeePassXC.exe', '1Password.exe'], models: {}, provider: 'chatgpt',
+  theme: 'system', pinned: true, autoCapture: true, denied: process.platform === 'darwin'
+    ? ['com.apple.keychainaccess', 'com.apple.passwords', 'com.1password.1password', 'org.keepassxc.keepassxc']
+    : ['CredentialUIBroker.exe', 'LogonUI.exe', 'KeePass.exe', 'KeePassXC.exe', '1Password.exe'], models: {}, provider: 'chatgpt',
 };
 
 export class Store {

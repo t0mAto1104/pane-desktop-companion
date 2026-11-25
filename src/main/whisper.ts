@@ -46,7 +46,7 @@ function transcribeClip(executable: string, args: string[], cwd: string, pcm: Bu
       { cwd, signal, windowsHide: true, maxBuffer: 128 * 1024, encoding: 'utf8' },
       (error, output) => {
         if (signal.aborted) { reject(signal.reason); return; }
-        if (error) { reject(new UserError('离线语音引擎运行失败或超时。请重试，并确认已安装 Windows x64 版 Pane。')); return; }
+        if (error) { reject(new UserError('离线语音引擎运行失败或超时。请重试，并确认使用与系统架构对应的 Pane 安装包。')); return; }
         resolve(output.trim().replace(/[\r\n]+/g, ' '));
       });
     child.stdin?.on('error', () => {});

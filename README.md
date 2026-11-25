@@ -19,6 +19,8 @@ https://github.com/user-attachments/assets/e4d62571-25f8-437b-b1cc-7a00d160b7d3
 - **最新预览版 · 3.5.0-voice.5**　采用「折窗」新标志，包含自动划词、麦克风试录和本地 Whisper 转写。[下载安装包](https://github.com/t0mAto1104/pane-desktop-companion/releases/download/v3.5.0-voice.5/Pane-Setup-3.5.0-voice.5-x64.exe) · [版本说明](https://github.com/t0mAto1104/pane-desktop-companion/releases/tag/v3.5.0-voice.5)
 - **稳定版**　包含浮动聊天、窗口截图问答和桌面指导。[查看最新稳定版](https://github.com/t0mAto1104/pane-desktop-companion/releases/latest)
 
+- **macOS 14+ 预览版 · 3.5.0-mac.2**　修复浏览器划词，提供 Apple Silicon 和 Intel 安装包。[下载安装包](https://github.com/t0mAto1104/pane-desktop-companion/releases/tag/v3.5.0-mac.2) · [构建和权限说明](docs/MACOS.md)
+
 ## 主要功能
 
 - **窗口问答**　按 **Ctrl+Shift+Space** 唤出 Pane。预览单个窗口的截图后再发送，也可绑定窗口，让 Pane 在本机观察界面变化。

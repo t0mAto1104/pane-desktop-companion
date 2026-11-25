@@ -32,7 +32,7 @@ export class InputRouter {
                  ownSignal: AbortSignal, validate: (signal: AbortSignal) => Promise<void>, selectedText?: string): Promise<Run> {
     const d = this.deps;
     this.assertIdle();
-    if (d.unavailable()) throw new UserError('Windows 桌面不可用。');
+    if (d.unavailable()) throw new UserError('系统桌面不可用。');
     const id = d.activeConversation();
     const context = { ...interactionContext(origin, id, target, text), selectedText };
     const current = d.settings();

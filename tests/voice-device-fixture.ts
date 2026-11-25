@@ -6,12 +6,12 @@ function log(event: string) {
   appendFileSync(process.env.PANE_TEST_VOICE_LOG!, event + '\n');
 }
 
-export async function listWindowsAudio(): Promise<VoiceDevice[]> {
+export async function listAudio(): Promise<VoiceDevice[]> {
   return [{ kind: 'input', id: 'mic-2', label: '测试 USB 麦克风' },
     { kind: 'output', id: 'speaker-2', label: '测试扬声器' }];
 }
 
-export function captureWindows(_helper: string, device: string, signal: AbortSignal, onMeter: (level: number) => void) {
+export function captureAudio(_helper: string, device: string, signal: AbortSignal, onMeter: (level: number) => void) {
   log('record:' + device);
   let finish!: () => void;
   const result = new Promise<Buffer>((resolve, reject) => {
@@ -29,12 +29,12 @@ export function captureWindows(_helper: string, device: string, signal: AbortSig
   return { result, finish };
 }
 
-export async function playWindowsAudio(_helper: string, device: string, _pcm: Buffer, signal: AbortSignal) {
+export async function playAudio(_helper: string, device: string, _pcm: Buffer, signal: AbortSignal) {
   log('preview:' + device);
   await setTimeout(90, undefined, { signal });
 }
 
-export async function speakOnWindows(_helper: string, device: string, _text: string, signal: AbortSignal) {
+export async function speakOnDevice(_helper: string, device: string, _text: string, signal: AbortSignal) {
   log('speak:' + device);
   await setTimeout(90, undefined, { signal });
 }

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { clipboard, screen } from 'electron';
 import type { Run, Settings, Target, Update } from '../shared';
 import { selectionText, type SelectionActions, type SelectionRequest, type SelectionView } from '../selection';
-import { sameTarget, UserError } from './native';
+import { sameTarget, UserError, type SelectionDragAnchor, type SelectionWatchEvent } from './native';
 import type { SelectionReader } from './selection-reader';
 import type { SelectionToolbar } from './selection-toolbar';
 
@@ -26,9 +26,11 @@ type Dependencies = {
 export class SelectionManager {
   private session?: { target?: Target; view: SelectionView; run?: Run };
   private watcher?: AbortController;
+  private watchedDenyList?: string[];
   private query?: AbortController;
   private sending?: AbortController;
   private timer?: ReturnType<typeof setTimeout>;
+  private dragAnchor?: SelectionDragAnchor;
   private lastQuery = 0;
   private lastSelection = '';
 
@@ -71,34 +73,50 @@ export class SelectionManager {
   configure() {
     const props = this.deps.settings();
     if (this.deps.blocked() || !props.selectionEnabled) { this.close(); return; }
-    if ((props.selectionAuto || !!this.session) && !this.watcher) {
+    const watch = props.selectionAuto || !!this.session;
+    if (watch && (!this.watcher || this.watchedDenyList !== props.denied)) {
+      this.watcher?.abort();
       const watcher = new AbortController();
       this.watcher = watcher;
-      this.deps.reader.watch(watcher.signal, event => this.onEvent(event));
-    } else if (!props.selectionAuto && !this.session) {
+      this.watchedDenyList = props.denied;
+      this.deps.reader.watch(watcher.signal, event => this.onEvent(event), props.denied);
+    } else if (!watch) {
       this.watcher?.abort();
       this.watcher = undefined;
     }
   }
 
-  private onEvent(event: string) {
+  private onEvent(event: SelectionWatchEvent) {
     if (this.deps.blocked()) return;
-    if (event === 'focus') {
+    if (event.type === 'focus') {
       this.lastSelection = '';
       if (!this.deps.toolbar.focused) this.close();
       return;
     }
-    if ((event === 'click' || event === 'drag') && this.deps.toolbar.contains(screen.getCursorScreenPoint())) return;
-    if (this.deps.toolbar.focused && event === 'selection') return;
-    if (event === 'click') { if (this.session) this.close(); return; }
-    if (event === 'drag') this.lastSelection = '';
-    if (!this.deps.settings().selectionAuto || (event !== 'drag' && event !== 'selection')) return;
+    if (event.type === 'click' || event.type === 'drag') {
+      const point = event.type === 'drag' ? event.anchor?.point : undefined;
+      if (this.deps.toolbar.contains(point ?? screen.getCursorScreenPoint())) return;
+    }
+    if (this.deps.toolbar.focused && event.type === 'selection') return;
+    if (event.type === 'click') {
+      if (this.session || this.dragAnchor) this.close();
+      return;
+    }
+    if (!this.deps.settings().selectionAuto) return;
+    if (event.type === 'drag') {
+      this.lastSelection = '';
+      this.dragAnchor = event.anchor;
+    }
     clearTimeout(this.timer);
     const wait = Math.max(150, 400 - (Date.now() - this.lastQuery));
-    this.timer = setTimeout(() => void this.open(false), wait);
+    this.timer = setTimeout(() => {
+      const anchor = this.dragAnchor;
+      this.dragAnchor = undefined;
+      void this.open(false, anchor);
+    }, wait);
   }
 
-  async open(manual: boolean) {
+  async open(manual: boolean, dragAnchor?: SelectionDragAnchor) {
     const d = this.deps;
     const settings = d.settings();
     if (d.blocked() || !settings.selectionEnabled || (!manual && !settings.selectionAuto)) return;
@@ -116,7 +134,8 @@ export class SelectionManager {
         return;
       }
       const text = result.status === 'ok' ? selectionText(result.text) : '';
-      if (!manual && (!text || result.status !== 'ok' || !result.rectangles.length)) return;
+      const pointer = dragAnchor?.targetId === data.target.id ? dragAnchor.point : undefined;
+      if (!manual && (!text || result.status !== 'ok' || (!result.rectangles.length && !pointer))) return;
       const key = createHash('sha256').update(JSON.stringify([data.target.id, text,
         result.status === 'ok' ? result.rectangles : []])).digest('hex');
       if (!manual && (key === this.lastSelection ||
@@ -130,7 +149,7 @@ export class SelectionManager {
         canAttach: !!bound && sameTarget(bound, data.target), language: settings.selectionLanguage,
         theme: settings.theme, answer: '', busy: false, conversation: false, automatic: !manual, badge: !manual,
       }};
-      if (!await d.toolbar.show(result.status === 'ok' ? result.rectangles : [], this.session.view, manual) &&
+      if (!await d.toolbar.show(result.status === 'ok' ? result.rectangles : [], this.session.view, manual, pointer) &&
           this.query === controller) this.dismissSession();
       this.configure();
     } catch (error) {
@@ -186,6 +205,7 @@ export class SelectionManager {
 
   close() {
     clearTimeout(this.timer);
+    this.dragAnchor = undefined;
     this.query?.abort();
     this.dismissSession();
     if (this.deps.blocked() || !this.deps.settings().selectionEnabled || !this.deps.settings().selectionAuto) {

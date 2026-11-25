@@ -55,7 +55,7 @@ export function VoiceDeviceSettings({ settings, update, voice }: {
       if (!current) return;
       if (result.ok) { setDevices(result.value); setStatus(''); }
       else setStatus(result.error);
-    }).catch(() => { if (current) setStatus('无法读取 Windows 音频设备。'); });
+    }).catch(() => { if (current) setStatus('无法读取系统音频设备。'); });
     return () => { current = false; };
   }, [refresh]);
   useEffect(() => () => { if (trialActive.current) void window.pane.call('voice:cancel'); }, []);
@@ -80,7 +80,7 @@ export function VoiceDeviceSettings({ settings, update, voice }: {
       const choices = devices.filter(device => device.kind === kind);
       return <label className="field" key={kind}>{label}
         <select aria-label={label} disabled={busy} value={settings[field]} onChange={event => { setTrial(''); update({ [field]: event.target.value }); }}>
-          <option value="">跟随 Windows 默认设备</option>
+          <option value="">跟随系统默认设备</option>
           {settings[field] && !choices.some(device => device.id === settings[field]) && <option value={settings[field]}>上次选择的设备（当前不可用）</option>}
           {choices.map(device => <option key={device.id} value={device.id}>{device.label}</option>)}
         </select>

@@ -28,14 +28,13 @@ import type { SelectionActions } from '../selection';
 import { VoiceManager } from './voice-manager';
 import { VoiceModel } from './voice-model';
 import { voiceSettings } from '../voice';
+import { desktopPermissions, mac, nativePaths, openDesktopPermission, requireMicrophone } from './platform';
 
 const accelerator = 'Control+Shift+Space';
 const rendererFile = join(__dirname, '../renderer/index.html');
 const expectedURL = pathToFileURL(rendererFile).href;
-const executable = app.isPackaged ? join(process.resourcesPath, 'native/window-capture.exe') : join(__dirname, '../../native/bin/window-capture.exe');
+const { desktop: executable, whisper: whisperExecutable } = nativePaths();
 const captureBridge = new NativeBridge(executable);
-const whisperExecutable = app.isPackaged ? join(process.resourcesPath, 'native/whisper/whisper-cli.exe')
-  : join(__dirname, '../../native/bin/whisper/whisper-cli.exe');
 const detector = new ElementDetector((target, denied, signal) => captureBridge.inspectAutomation(target, denied, signal));
 let toolScope = new AbortController();
 
@@ -278,8 +277,9 @@ function saveSettings(next: Settings) {
 }
 
 function denyList(input: unknown) {
-  if (!Array.isArray(input) || input.length > 100 || input.some(item => typeof item !== 'string' || item.length > 160 || !/^[^<>:"/\\|?*\x00-\x1f]+\.exe$/i.test(item))) {
-    throw new UserError('每行填写一个 .exe 文件名，最多 100 项。');
+  const format = mac ? /^[a-z0-9][a-z0-9._-]*$/i : /^[^<>:"/\\|?*\x00-\x1f]+\.exe$/i;
+  if (!Array.isArray(input) || input.length > 100 || input.some(item => typeof item !== 'string' || item.length > 160 || !format.test(item))) {
+    throw new UserError(mac ? '每行填写一个应用标识（例如 com.example.app），最多 100 项。' : '每行填写一个 .exe 文件名，最多 100 项。');
   }
   return [...new Map(input.map((item: string) => [item.toLowerCase(), item])).values()];
 }
@@ -310,7 +310,12 @@ function requireVoiceWindow() {
 }
 
 const actions: Actions = {
-  snapshot: () => ({ settings, conversationId: activeId, capture, observation: observations.current, run: chat.run, shortcut, compact }),
+  snapshot: () => ({ settings, conversationId: activeId, capture, observation: observations.current, run: chat.run, shortcut, compact, mac }),
+  'permissions:state': desktopPermissions,
+  'permissions:request': permission => {
+    requireVoiceWindow();
+    return openDesktopPermission(permission, captureBridge);
+  },
   'settings:update': patch => {
     if (!patch || typeof patch !== 'object') throw new UserError('设置格式无效。');
     const next = { ...settings, ...awarenessOptions({ ...settings, ...patch }), ...companionOptions({
@@ -351,14 +356,23 @@ const actions: Actions = {
   'voice:modelStatus': () => voiceModel.status(),
   'voice:modelDownload': () => { requireVoiceWindow(); return voiceModel.install(); },
   'voice:modelCancel': () => voiceModel.cancel(),
-  'voice:start': () => {
+  'voice:start': async () => {
     assertIdle();
     requireVoiceWindow();
+    if (mac) {
+      await requireMicrophone();
+      requireVoiceWindow();
+      assertIdle();
+    }
     selection.close();
     return voice.start(settings);
   },
-  'voice:testMic': () => {
+  'voice:testMic': async () => {
     requireVoiceWindow();
+    if (mac) {
+      await requireMicrophone();
+      requireVoiceWindow();
+    }
     selection.close();
     return voice.testMicrophone(settings);
   },
@@ -559,6 +573,7 @@ function updateTray() {
 }
 
 function launch() {
+  if (mac) app.setActivationPolicy('accessory');
   const dataDir = app.getPath('userData');
   store = new Store(join(dataDir, 'pane.sqlite'));
   settings = store.settings();
@@ -667,7 +682,7 @@ function launch() {
   globalShortcut.register('Control+Shift+Q', () => void selection.open(true));
   shortcut = globalShortcut.register(accelerator, () => void onHotkey());
 
-  const icon = nativeImage.createFromPath(join(__dirname, '../renderer/pane-tray.png')).resize({ width: 24, height: 24 });
+  const icon = nativeImage.createFromPath(join(__dirname, '../renderer/pane-tray.png')).resize({ width: mac ? 18 : 24, height: mac ? 18 : 24 });
   tray = new Tray(icon);
   tray.setToolTip('Pane · Ctrl+Shift+Space');
   updateTray();
@@ -684,7 +699,7 @@ function launch() {
 
 const profileDirectory = app.commandLine.getSwitchValue('user-data-dir');
 if (isAbsolute(profileDirectory)) app.setPath('userData', profileDirectory);
-app.setAppUserModelId('local.pane.desktop-companion');
+if (!mac) app.setAppUserModelId('local.pane.desktop-companion');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => show());

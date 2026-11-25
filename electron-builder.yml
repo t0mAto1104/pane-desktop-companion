@@ -10,8 +10,6 @@ files:
   - package.json
   - '!dist/**/*.map'
 extraResources:
-  - { from: native/bin/window-capture.exe, to: native/window-capture.exe }
-  - { from: native/bin/whisper, to: native/whisper }
   - { from: vendor/siwc/LICENSE, to: licenses/siwc-LICENSE.txt }
   - { from: vendor/siwc/THIRD_PARTY_NOTICES.md, to: licenses/siwc-THIRD-PARTY-NOTICES.md }
   - { from: vendor/siwc/UPSTREAM.md, to: licenses/siwc-UPSTREAM.md }
@@ -19,6 +17,26 @@ win:
   icon: assets/pane.ico
   signExecutable: false
   artifactName: Pane-Setup-${version}-${arch}.${ext}
+  extraResources:
+    - { from: native/bin/window-capture.exe, to: native/window-capture.exe }
+    - { from: native/bin/whisper, to: native/whisper }
+mac:
+  minimumSystemVersion: '14.0'
+  category: public.app-category.productivity
+  icon: native/bin/macos/pane.icns
+  artifactName: Pane-Mac-${version}-${arch}.${ext}
+  hardenedRuntime: true
+  entitlements: native/macos/entitlements.plist
+  entitlementsInherit: native/macos/entitlements.plist
+  binaries:
+    - Contents/Resources/native/pane-native
+    - Contents/Resources/native/whisper/whisper-cli
+  extendInfo:
+    NSMicrophoneUsageDescription: Pane 使用你选定的麦克风录制语音问题，并在此设备上转写。
+  extraResources:
+    - { from: native/bin/macos/pane-native, to: native/pane-native }
+    - { from: native/bin/macos/whisper, to: native/whisper }
+  target: [dmg, zip]
 nsis:
   oneClick: false
   perMachine: false

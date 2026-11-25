@@ -27,7 +27,7 @@ type Raw = { geometry: WindowGeometry; tree: { elements: Array<Omit<UiElement, '
 export function sanitizeInspection(target: Target, raw: Raw): UiInspection {
   if (!raw?.geometry || !positiveRect(raw.geometry.bounds) || !Number.isInteger(raw.geometry.dpi) ||
       raw.geometry.dpi < 48 || raw.geometry.dpi > 768 || !Array.isArray(raw.tree?.elements)) {
-    throw new UserError('Windows 返回了无效的界面控件布局。');
+    throw new UserError('原生组件返回了无效的界面控件布局。');
   }
   const pid = Number(target.id.split(':')[1]);
   const byId = new Map<string, UiElement>();

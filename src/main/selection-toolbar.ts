@@ -4,6 +4,7 @@ import type { PixelRect } from '../shared';
 import type { SelectionView } from '../selection';
 import { ownFrame } from './permission-manager';
 import { selectionPosition } from './selection-position';
+import { toDip } from './platform';
 
 export class SelectionToolbar {
   private win?: BrowserWindow;
@@ -28,15 +29,16 @@ export class SelectionToolbar {
     return point.x >= b.x && point.x < b.x + b.width && point.y >= b.y && point.y < b.y + b.height;
   }
 
-  async show(rectangles: PixelRect[], view: SelectionView, focus = false) {
+  async show(rectangles: PixelRect[], view: SelectionView, focus = false, pointer?: Point) {
     const version = ++this.version;
     this.rectangles = rectangles.map(rect => {
-      const start = screen.screenToDipPoint({ x: rect.x, y: rect.y });
-      const end = screen.screenToDipPoint({ x: rect.x + rect.width, y: rect.y + rect.height });
+      const start = toDip({ x: rect.x, y: rect.y });
+      const end = toDip({ x: rect.x + rect.width, y: rect.y + rect.height });
       return { ...start, width: Math.max(1, end.x - start.x), height: Math.max(1, end.y - start.y) };
     });
     const anchor = this.rectangles.at(-1);
-    this.pointer = anchor ? { x: anchor.x + anchor.width - 1, y: anchor.y + anchor.height - 1 } : screen.getCursorScreenPoint();
+    this.pointer = anchor ? { x: anchor.x + anchor.width - 1, y: anchor.y + anchor.height - 1 }
+      : pointer ?? screen.getCursorScreenPoint();
     const bounds = this.placement(view);
     if (!bounds) return false;
     let win = this.win;

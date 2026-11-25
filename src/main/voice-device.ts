@@ -50,7 +50,7 @@ function speechProcess(script: string, data: unknown, signal: AbortSignal, timeo
   });
 }
 
-export function listWindowsAudio(executable: string, signal: AbortSignal): Promise<VoiceDevice[]> {
+export function listAudio(executable: string, signal: AbortSignal): Promise<VoiceDevice[]> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     execFile(executable, helperArgs('audio-list'),
@@ -65,13 +65,13 @@ export function listWindowsAudio(executable: string, signal: AbortSignal): Promi
             typeof device.id === 'string' && device.id.length > 0 && device.id.length <= 512 &&
             typeof device.label === 'string' && device.label.length > 0));
         } catch {
-          reject(new UserError('无法读取 Windows 音频设备。'));
+          reject(new UserError('无法读取系统音频设备。'));
         }
       });
   });
 }
 
-export function captureWindows(executable: string, device: string, signal: AbortSignal, onMeter: (level: number) => void) {
+export function captureAudio(executable: string, device: string, signal: AbortSignal, onMeter: (level: number) => void) {
   signal.throwIfAborted();
   const child = spawn(executable, helperArgs('audio-record', device), { windowsHide: true, signal });
   const result = new Promise<Buffer>((resolve, reject) => {
@@ -101,33 +101,40 @@ export function captureWindows(executable: string, device: string, signal: Abort
       clearTimeout(waiting);
       clearTimeout(deadline);
       if (signal.aborted) reject(signal.reason);
-      else if (code !== 0 || !bytes) reject(new UserError('无法从所选麦克风读取音频。请检查连接、输入设备和 Windows 麦克风权限。'));
+      else if (code !== 0 || !bytes) reject(new UserError('无法从所选麦克风读取音频。请检查连接、输入设备和系统麦克风权限。'));
       else resolve(Buffer.concat(chunks, bytes));
     });
   });
   return { result, finish: () => { if (child.stdin.writable && !child.stdin.writableEnded) child.stdin.end('s'); } };
 }
 
-export async function speakOnWindows(executable: string, device: string, text: string, signal: AbortSignal) {
+export async function speakOnDevice(executable: string, device: string, text: string, signal: AbortSignal) {
   const speech = text.replace(new RegExp('```[\\s\\S]*?```', 'g'), ' ').replace(/\[(.*?)\]\([^)]+\)/g, '$1').replace(/[#*_~`]/g, '').trim();
   if (!speech) return;
-  const data = await speechProcess(synthesize, { language: /\p{Script=Han}/u.test(speech) ? 'zh' : 'en',
-    text: Array.from(speech).slice(0, 4000).join('') }, signal, 30_000, maxSpeechBytes * 2);
+  const request = { language: /\p{Script=Han}/u.test(speech) ? 'zh' : 'en', text: Array.from(speech).slice(0, 4000).join('') };
+  if (process.platform === 'darwin') {
+    return sendAudio(executable, 'audio-speak', device, JSON.stringify(request), signal, 125_000);
+  }
+  const data = await speechProcess(synthesize, request, signal, 30_000, maxSpeechBytes * 2);
   const pcm = Buffer.from(data.pcm ?? '', 'base64');
   if (!pcm.length || pcm.length % 2 !== 0) throw new UserError('Windows 无法生成朗读音频。');
-  await playWindowsAudio(executable, device, pcm.subarray(0, maxSpeechBytes), signal);
+  await playAudio(executable, device, pcm.subarray(0, maxSpeechBytes), signal);
 }
 
-export async function playWindowsAudio(executable: string, device: string, pcm: Buffer, signal: AbortSignal, microphonePreview = false) {
+export function playAudio(executable: string, device: string, pcm: Buffer, signal: AbortSignal, microphonePreview = false) {
+  return sendAudio(executable, microphonePreview ? 'audio-preview' : 'audio-play', device, pcm, signal, 95_000);
+}
+
+async function sendAudio(executable: string, command: string, device: string, input: Buffer | string, signal: AbortSignal, timeout: number) {
   signal.throwIfAborted();
   return new Promise<void>((resolve, reject) => {
-    const child = execFile(executable, helperArgs(microphonePreview ? 'audio-preview' : 'audio-play', device),
-      { windowsHide: true, signal, timeout: 95_000 }, error => {
+    const child = execFile(executable, helperArgs(command, device),
+      { windowsHide: true, signal, timeout }, error => {
         if (signal.aborted) { reject(signal.reason); return; }
         if (error) { reject(new UserError('无法使用所选朗读输出设备。请检查设备是否连接。')); return; }
         resolve();
       });
     child.stdin?.on('error', () => {});
-    child.stdin?.end(pcm);
+    child.stdin?.end(input);
   });
 }
