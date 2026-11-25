@@ -57,7 +57,8 @@ func validRect(_ rect: CGRect) -> Bool {
         case "selection":
             let target = try desktop.foreground(args)
             let selection = try MacAccessibility.selection(target)
-            guard try desktop.foreground(args).id == target.id else { throw NativeFailure("target_gone") }
+            let latest = try desktop.foreground(args)
+            guard latest.id == target.id, latest.bounds == target.bounds else { throw NativeFailure("target_gone") }
             try sendJSON(["target": target.json, "selection": selection] as [String: Any])
         case "selection-watch":
             MacSelectionWatch(desktop: desktop, denied: args).run()

@@ -30,6 +30,8 @@ npm run test:mac -- --packaged
 
 构建检查验证 Mach-O 架构、签名、原生帮助程序的协议以及 Whisper 启动。`npm run test:mac -- --packaged --interactive` 额外检查真实 AppKit 测试窗口、禁止名单、截图、ROI、按钮树、选区和窗口关闭。运行交互测试的终端需要系统屏幕录制与辅助功能权限。
 
+本机安装 Chrome 时，可用 `npm run test:mac -- --browser` 检查网页正文、网页输入框、空选区和密码字段。这组测试需要辅助功能权限。
+
 发行前还需在已登录的 Mac 上走查：
 
 1. Finder、Safari、Chrome 和 TextEdit 中从菜单栏或机器人截图、绑定、局部放大以及选区问答。

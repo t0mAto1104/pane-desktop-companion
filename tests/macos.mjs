@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { _electron as driver } from 'playwright-core';
+import { _electron as driver, chromium } from 'playwright-core';
 
 assert.equal(process.platform, 'darwin', 'macOS tests require a Mac');
 const run = promisify(execFile);
@@ -44,7 +44,8 @@ if (bundle) {
     desktop = await driver.launch({ executablePath: join(bundle, 'Contents/MacOS/Pane'),
       args: ['--show-main', '--user-data-dir=' + profile], timeout: 25_000 });
     const page = await desktop.firstWindow();
-    await page.getByRole('heading', { name: '聊聊屏幕上的内容' }).waitFor({ timeout: 10_000 });
+    await page.waitForFunction(() => document.querySelector('h1')?.textContent === '聊聊屏幕上的内容',
+      undefined, { polling: 100, timeout: 10_000 });
     assert.equal(await page.evaluate(() => typeof require), 'undefined');
     const checks = await page.evaluate(async () => ({
       snapshot: await window.pane.call('snapshot'),
@@ -59,6 +60,45 @@ if (bundle) {
   } finally {
     await desktop?.close();
     await rm(profile, { recursive: true, force: true });
+  }
+}
+
+if (process.argv.includes('--browser')) {
+  const executablePath = process.env.PANE_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  const browser = await chromium.launch({ executablePath, headless: false });
+  const watcher = spawn(helper, ['selection-watch', String(process.pid)], { stdio: 'ignore' });
+  try {
+    const page = await browser.newPage();
+    await page.goto('data:text/html,' + encodeURIComponent(
+      '<p id="text" tabindex="0">Browser <strong>page selection</strong></p>' +
+      '<textarea>Editable browser text</textarea><input type="password" value="private fixture">'));
+    await page.bringToFront();
+    await page.locator('#text').click();
+    assert.match((await json('foreground')).executable, /^com\.google\.Chrome/i, 'Bring the Chrome fixture to the front');
+    await page.locator('#text').evaluate(node => window.getSelection().selectAllChildren(node));
+
+    async function readUntil(matches) {
+      let selected;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        selected = (await json('selection')).selection;
+        if (matches(selected)) return selected;
+        await delay(250);
+      }
+      return selected;
+    }
+    const selected = await readUntil(value => value.text === 'Browser page selection');
+    assert.equal(selected.status, 'ok');
+    assert.equal(selected.text, 'Browser page selection');
+    await page.locator('textarea').evaluate(node => { node.focus(); node.setSelectionRange(0, 8); });
+    assert.equal((await readUntil(value => value.text === 'Editable')).text, 'Editable');
+    await page.locator('textarea').evaluate(node => node.setSelectionRange(0, 0));
+    assert.equal((await readUntil(value => value.status === 'empty')).status, 'empty');
+    await page.locator('input').evaluate(node => { node.focus(); node.select(); });
+    assert.equal((await readUntil(value => value.status === 'protected')).status, 'protected');
+    console.log('Chrome document text, editable selection, collapsed selection, and password protection passed.');
+  } finally {
+    watcher.kill();
+    await browser.close();
   }
 }
 

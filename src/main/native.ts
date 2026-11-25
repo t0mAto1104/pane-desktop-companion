@@ -3,6 +3,10 @@ import { randomUUID } from 'node:crypto';
 import type { RegionCapture, ScreenRegion, Screenshot, Target, UiElement, WindowGeometry } from '../shared';
 
 import type { SelectionRead } from '../selection';
+import type { Point } from 'electron';
+
+export type SelectionDragAnchor = { targetId: string; point: Point };
+export type SelectionWatchEvent = { type: 'focus' | 'click' | 'selection' } | { type: 'drag'; anchor?: SelectionDragAnchor };
 
 export class UserError extends Error {}
 
@@ -70,7 +74,7 @@ export class NativeBridge {
     return JSON.parse(result.toString());
   }
 
-  watchSelection(signal: AbortSignal, notify: (event: string) => void, denied: string[]) {
+  watchSelection(signal: AbortSignal, notify: (event: SelectionWatchEvent) => void, denied: string[]) {
     const worker = spawn(this.path, ['selection-watch', String(process.pid), ...(process.platform === 'darwin' ? denied : [])], {
       windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], signal,
     });
@@ -82,7 +86,14 @@ export class NativeBridge {
       pending = (pending + text).slice(-4096);
       const lines = pending.split(/\r?\n/);
       pending = lines.pop() ?? '';
-      for (const line of lines) if (['focus', 'click', 'drag', 'selection'].includes(line)) notify(line);
+      for (const line of lines) {
+        if (line === 'focus' || line === 'click' || line === 'drag' || line === 'selection') {
+          notify({ type: line });
+        } else if (process.platform === 'darwin') {
+          const drag = /^drag (\d+:\d+:\d+) (-?\d{1,6}) (-?\d{1,6})$/.exec(line);
+          if (drag) notify({ type: 'drag', anchor: { targetId: drag[1], point: { x: +drag[2], y: +drag[3] } } });
+        }
+      }
     });
   }
 

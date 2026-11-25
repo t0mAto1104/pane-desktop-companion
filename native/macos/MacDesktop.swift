@@ -44,6 +44,8 @@ struct MacTarget {
         guard let rows = CGWindowListCopyWindowInfo([options, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] else { return [] }
         let foregroundPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        // WindowServer can report sharing mode .none for ordinary windows when screen recording is denied.
+        let sharingStateAvailable = CGPreflightScreenCaptureAccess()
         var results: [MacTarget] = []
         for row in rows {
             guard (row[kCGWindowLayer as String] as? Int) == 0,
@@ -61,7 +63,8 @@ struct MacTarget {
             let caption = (row[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let title = caption ?? app.localizedName ?? name
             let visible = row[kCGWindowIsOnscreen as String] as? Bool == true
-            let protected = (row[kCGWindowSharingState as String] as? Int) == Int(CGWindowSharingType.none.rawValue)
+            let protected = sharingStateAvailable &&
+                (row[kCGWindowSharingState as String] as? Int) == Int(CGWindowSharingType.none.rawValue)
             let front = foregroundPID == pid && visible && !results.contains { $0.pid == pid && $0.visible }
             results.append(MacTarget(window: window, pid: pid, started: started, executable: name,
                                      title: String(title.prefix(200)), bounds: bounds.integral,
